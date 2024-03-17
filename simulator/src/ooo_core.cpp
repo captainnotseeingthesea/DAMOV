@@ -115,6 +115,10 @@ void OOOCore::initStats(AggregateStat* parentStat) {
     approxInstrsStat->init("approxInstrs", "Instrs with approx uop decoding", &approxInstrs);
     ProxyStat* mispredBranchesStat = new ProxyStat();
     mispredBranchesStat->init("mispredBranches", "Mispredicted branches", &mispredBranches);
+    // xuanyi
+    ProxyStat* predBranchesStat = new ProxyStat();
+    predBranchesStat->init("predBranches", "Predicted branches", &predBranches);
+
     ProxyStat* mispredInstrsStat = new ProxyStat();
     mispredInstrsStat->init("mispredInstrs", "Instructions executed in wrong path", &mispredInstrs); // top-down
     ProxyStat* mispredPenaltyStat = new ProxyStat();
@@ -136,6 +140,7 @@ void OOOCore::initStats(AggregateStat* parentStat) {
     coreStat->append(bblsStat);
     coreStat->append(approxInstrsStat);
     coreStat->append(mispredBranchesStat);
+    coreStat->append(predBranchesStat);
     coreStat->append(mispredInstrsStat);
     coreStat->append(mispredPenaltyStat);
     coreStat->append(opExecutedStat);
@@ -296,7 +301,7 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
          if((dispatchCycle > lastCommitCycleOther) & (dispatchCycle > lastStoreCommitCycle) & (lastStoreCommitCycle > lastCommitCycleOther)){
             if(lastStoreCommitCycle > lastCommitCycleStore_prev){
             	store_stall_diff = lastStoreCommitCycle - lastCommitCycleOther;
-            	storeStallsTotal += load_stall_diff;
+            	storeStallsTotal += store_stall_diff;
             }
             lastCommitCycleStore_prev = lastStoreCommitCycle;
         }
@@ -526,6 +531,10 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
         mispredPenalty += (reqCycleAfter - reqCycleBefore);
 
 
+    }
+    else if(branchPc)
+    {
+        predBranches++; // xuanyi
     }
     branchPc = 0;  // clear for next BBL
 

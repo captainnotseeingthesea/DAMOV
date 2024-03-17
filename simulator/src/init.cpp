@@ -848,6 +848,11 @@ static void PostInitStats(bool perProcessDir, Config& config) {
         zinfo->periodicStatsBackend = nullptr;
     }
 
+    // xuani: to dump the stats to a hdf file (convinient for post processing)
+    zinfo->eventualStatsBackend = new HDF5Backend(evStatsFile, zinfo->rootStat, (1 << 17) /* 128KB chunks */, zinfo->skipStatsVectors, false /* don't sum regular aggregates*/);
+    zinfo->eventualStatsBackend->dump(true); //must have a first sample
+    zinfo->statsBackends->push_back(zinfo->eventualStatsBackend);
+
     if (zinfo->maxMinInstrs) {
         warn("maxMinInstrs IS DEPRECATED");
         for (uint32_t i = 0; i < zinfo->numCores; i++) {

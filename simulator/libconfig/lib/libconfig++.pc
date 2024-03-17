@@ -1,4 +1,4 @@
-prefix=/home/safari/geraldo/panzer/isca2018/PIM-Benchmarks/PIMBenchmarkRepo/damov/simulator/libconfig
+prefix=/home/xuanyi/DAMOV/simulator/libconfig
 exec_prefix=${prefix}
 libdir=${exec_prefix}/lib
 includedir=${prefix}/include

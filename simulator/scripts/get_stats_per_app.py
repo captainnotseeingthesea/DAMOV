@@ -111,11 +111,7 @@ with open(tmp, "r") as ins:
                     
 
         except:
-<<<<<<< HEAD
-            print "Couldn't read some stat. Check label: " + label
-=======
             print("Couldn't read some stat")
->>>>>>> other
 
 # ====================== CPU Metrics  ======================
 if(len(cycles_list)!=0):
