@@ -13,7 +13,12 @@ then
         export PINPATH
         export RAMULATORPATH
         export LIBCONFIGPATH
-        scons -j$NUMCPUS
+		if [ "$2" = "d" ]
+		then
+        	scons -j$NUMCPUS --d
+		else
+			scons -j$NUMCPUS
+		fi
 
 elif [ "$1" = "r" ]
 then
