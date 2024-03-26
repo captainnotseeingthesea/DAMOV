@@ -48,11 +48,12 @@ int launchXtermDebugger(int targetPid, LibInfo* libzsimAddrs) {
         snprintf(symbolCmdStr, sizeof(symbolCmdStr), "add-symbol-file %s %p -s .data %p -s .bss %p", QUOTED(ZSIM_PATH), libzsimAddrs->textAddr, libzsimAddrs->dataAddr, libzsimAddrs->bssAddr);
 
         const char* const args[] = {"xterm", "-e", "gdb", "-p", targetPidStr.c_str(),
+            "-ex", "set pagination off",
             "-ex", "set confirm off", //we know what we're doing in the following 2 commands
             "-ex", symbolCmdStr,
             "-ex", "handle SIGTRAP nostop noprint", // For some reason we receive a lot of spurious sigtraps
             "-ex", "set confirm on", //reenable confirmations
-            "-ex", "c", //start running
+            // "-ex", "c", //start running
             nullptr};
         execvp(args[0], (char* const*)args);
         panic("shouldn't reach this...");
