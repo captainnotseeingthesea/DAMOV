@@ -12,5 +12,5 @@ workloads/*
 *.dramRequestsPerPhase
 *.tar.gz
 .vscode/
-
-
+tests/
+pin.log
