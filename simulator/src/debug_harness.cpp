@@ -52,6 +52,7 @@ int launchXtermDebugger(int targetPid, LibInfo* libzsimAddrs) {
             "-ex", "set confirm off", //we know what we're doing in the following 2 commands
             "-ex", symbolCmdStr,
             "-ex", "handle SIGTRAP nostop noprint", // For some reason we receive a lot of spurious sigtraps
+            "-ex", "handle SIG35 nostop noprint", // For openmp programs, we receive a lot of sig35 when thread finishes
             "-ex", "set confirm on", //reenable confirmations
             // "-ex", "c", //start running
             nullptr};
