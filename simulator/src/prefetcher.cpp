@@ -172,7 +172,7 @@ uint64_t StreamPrefetcher::access(MemReq & req)
                     pfRespCycle = parent->access(pfReq);
                     longerCycle = (wbAcc.reqCycle > pfRespCycle) ? wbAcc.reqCycle : pfRespCycle;
 
-					          e.valid[prefetchPos] = true;
+                    e.valid[prefetchPos] = true;
                     e.times[prefetchPos].fill(reqCycle, longerCycle);
 
                     profPrefetches.inc();
@@ -192,7 +192,7 @@ uint64_t StreamPrefetcher::access(MemReq & req)
                         prefetchPos += stride;
                         pfReq.lineAddr += stride;
                         pfRespCycle = parent->access(pfReq);
-						            longerCycle = (likely(longerCycle < pfRespCycle)) ? pfRespCycle : longerCycle;
+                        longerCycle = (likely(longerCycle < pfRespCycle)) ? pfRespCycle : longerCycle;
 
                         e.valid[prefetchPos] = true;
                         e.times[prefetchPos].fill(reqCycle, longerCycle);

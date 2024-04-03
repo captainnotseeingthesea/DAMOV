@@ -161,7 +161,7 @@ class StreamPrefetcher : public BaseCache {
 
                 void fill(uint32_t s, uint64_t r) { startCycle = s; respCycle = r; }
             };
-
+	
             AccessTimes times[64];
             std::bitset<64> valid;
 
