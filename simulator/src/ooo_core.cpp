@@ -64,7 +64,7 @@ uint64_t lastCommitCycleStore = 0;
 uint64_t lastCommitCycleOther = 0;
 
 
-OOOCore::OOOCore(FilterCache* _l1i, FilterCache* _l1d, g_string& _name) : Core(_name), l1i(_l1i), l1d(_l1d), cRec(0, _name) {
+OOOCore::OOOCore(FilterCache* _l1i, FilterCache* _l1d, GraphPrefetcher* _graphPrefetcher, g_string& _name) : Core(_name), l1i(_l1i), l1d(_l1d), graphPrefetcher(_graphPrefetcher), cRec(0, _name) {
     decodeCycle = DECODE_STAGE;  // allow subtracting from it
     curCycle = 0;
     phaseEndCycle = zinfo->phaseLength;
@@ -177,9 +177,8 @@ void OOOCore::contextSwitch(int32_t gid) {
     }
 }
 
-
 InstrFuncPtrs OOOCore::GetFuncPtrs() {
-    return {LoadFunc, StoreFunc, BblFunc, BranchFunc, PredLoadFunc, PredStoreFunc, OffloadBegin, OffloadEnd, FPTR_ANALYSIS, {0} };
+    return {LoadFunc, StoreFunc, BblFunc, BranchFunc, PredLoadFunc, PredStoreFunc, OffloadBegin, OffloadEnd, PrefetcherLoadSrcFunc, PrefetcherLoadDestFunc, FPTR_ANALYSIS, {0} };
 }
 
 void OOOCore::OffloadBegin(THREADID tid) {
@@ -187,6 +186,14 @@ void OOOCore::OffloadBegin(THREADID tid) {
 }
 void OOOCore::OffloadEnd(THREADID tid) {
     static_cast<OOOCore*>(cores[tid])->offloadFunction_end();
+}
+
+void OOOCore::PrefetcherLoadSrcFunc(THREADID tid, SrcInfo src) {
+    static_cast<OOOCore*>(cores[tid])->prefetcherLoadSrc(src);
+}
+
+void OOOCore::PrefetcherLoadDestFunc(THREADID tid, DestInfo dest) {
+    static_cast<OOOCore*>(cores[tid])->prefetcherLoadDest(dest);
 }
 
 inline void OOOCore::load(Address addr, uint32_t size) {

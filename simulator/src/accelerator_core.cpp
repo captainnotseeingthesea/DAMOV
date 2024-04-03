@@ -30,8 +30,8 @@
 #define DEBUG_MSG(args...)
 //#define DEBUG_MSG(args...) info(args)
 
-AcceleratorCore::AcceleratorCore(FilterCache* _l1i, FilterCache* _l1d, uint32_t _domain, g_string& _name)
-    : Core(_name), l1i(_l1i), l1d(_l1d), instrs(0), curCycle(0), cRec(_domain, _name) {}
+AcceleratorCore::AcceleratorCore(FilterCache* _l1i, FilterCache* _l1d, GraphPrefetcher* _graphPrefetcher, uint32_t _domain, g_string& _name)
+    : Core(_name), l1i(_l1i), l1d(_l1d), graphPrefetcher(_graphPrefetcher), instrs(0), curCycle(0), cRec(_domain, _name) {}
 
 uint64_t AcceleratorCore::getPhaseCycles() const {
     return curCycle % zinfo->phaseLength;
@@ -112,7 +112,7 @@ void AcceleratorCore::bblAndRecord(Address bblAddr, BblInfo* bblInfo) {
 }
 
 InstrFuncPtrs AcceleratorCore::GetFuncPtrs() {
-    return {LoadAndRecordFunc, StoreAndRecordFunc, BblAndRecordFunc, BranchFunc, PredLoadAndRecordFunc, PredStoreAndRecordFunc, OffloadBegin, OffloadEnd, FPTR_ANALYSIS, {0}};
+    return {LoadAndRecordFunc, StoreAndRecordFunc, BblAndRecordFunc, BranchFunc, PredLoadAndRecordFunc, PredStoreAndRecordFunc, OffloadBegin, OffloadEnd, PrefetcherLoadSrcFunc, PrefetcherLoadDestFunc, FPTR_ANALYSIS, {0}};
 }
 
 void AcceleratorCore::OffloadBegin(THREADID tid) {
@@ -121,6 +121,15 @@ void AcceleratorCore::OffloadBegin(THREADID tid) {
 void AcceleratorCore::OffloadEnd(THREADID tid) {
     static_cast<AcceleratorCore*>(cores[tid])->offloadFunction_end();
 }
+
+void AcceleratorCore::PrefetcherLoadSrcFunc(THREADID tid, SrcInfo src) {
+    static_cast<AcceleratorCore*>(cores[tid])->prefetcherLoadSrc(src);
+}
+
+void AcceleratorCore::PrefetcherLoadDestFunc(THREADID tid, DestInfo dest) {
+    static_cast<AcceleratorCore*>(cores[tid])->prefetcherLoadDest(dest);
+}
+
 void AcceleratorCore::LoadAndRecordFunc(THREADID tid, ADDRINT addr, UINT32 size) {
     static_cast<AcceleratorCore*>(cores[tid])->loadAndRecord(addr, size);
 }

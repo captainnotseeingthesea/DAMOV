@@ -35,11 +35,13 @@
 #include "locality.h"
 
 class FilterCache;
+class GraphPrefetcher;
 
 class TimingCore : public Core {
     private:
         FilterCache* l1i;
         FilterCache* l1d;
+        GraphPrefetcher *graphPrefetcher;
 
         uint64_t instrs;
 
@@ -52,7 +54,7 @@ class TimingCore : public Core {
 
 
     public:
-        TimingCore(FilterCache* _l1i, FilterCache* _l1d, uint32_t domain, g_string& _name);
+        TimingCore(FilterCache* _l1i, FilterCache* _l1d, GraphPrefetcher* _graphPrefetcher, uint32_t domain, g_string& _name);
         void offloadFunction_begin() {
              offload_region = true;
 	}
@@ -92,8 +94,14 @@ class TimingCore : public Core {
         inline void bblAndRecord(Address bblAddr, BblInfo* bblInstrs);
         inline void record(uint64_t startCycle);
 
+        inline void prefetcherLoadSrc(SrcInfo src) {graphPrefetcher->pushSrcInfo(src);}
+        inline void prefetcherLoadDest(DestInfo dest) {graphPrefetcher->pushDestInfo(dest);}
+
         static void OffloadBegin(THREADID tid);
         static void OffloadEnd(THREADID tid);
+
+        static void PrefetcherLoadSrcFunc(THREADID tid, SrcInfo src);
+        static void PrefetcherLoadDestFunc(THREADID tid, DestInfo dest);
 
         static void LoadAndRecordFunc(THREADID tid, ADDRINT addr, UINT32 size);
         static void StoreAndRecordFunc(THREADID tid, ADDRINT addr, UINT32 size);

@@ -26,12 +26,13 @@
 #include "timing_core.h"
 #include "filter_cache.h"
 #include "zsim.h"
+#include "graph_prefetcher.h"
 
 #define DEBUG_MSG(args...)
 //#define DEBUG_MSG(args...) info(args)
 
-TimingCore::TimingCore(FilterCache* _l1i, FilterCache* _l1d, uint32_t _domain, g_string& _name)
-    : Core(_name), l1i(_l1i), l1d(_l1d), instrs(0), curCycle(0), cRec(_domain, _name) {}
+TimingCore::TimingCore(FilterCache* _l1i, FilterCache* _l1d, GraphPrefetcher* _graphPrefetcher, uint32_t _domain, g_string& _name)
+    : Core(_name), l1i(_l1i), l1d(_l1d), graphPrefetcher(_graphPrefetcher), instrs(0), curCycle(0), cRec(_domain, _name) {}
 
 uint64_t TimingCore::getPhaseCycles() const {
     return curCycle % zinfo->phaseLength;
@@ -85,7 +86,15 @@ void TimingCore::leave() {
 
 void TimingCore::loadAndRecord(Address addr, uint32_t size) {
     uint64_t startCycle = curCycle;
-    curCycle = l1d->load(addr, curCycle);
+    if(inGraphPrefetcherAddr((void *)addr))
+    {
+        Address offset = ((Address)addr - (Address)zinfo->graphPrefetcherAddr) / GRAPH_PREFETCHER_ELE_SIZE;
+        curCycle = graphPrefetcher->load(offset, curCycle);
+    }
+    else
+    {
+        curCycle = l1d->load(addr, curCycle);
+    }
     cRec.record(startCycle);
 
     if (zinfo->numCores == 1){
@@ -100,7 +109,15 @@ void TimingCore::finish(){
 }
 void TimingCore::storeAndRecord(Address addr, uint32_t size) {
     uint64_t startCycle = curCycle;
-    curCycle = l1d->store(addr, curCycle);
+    if(inGraphPrefetcherAddr((void *)addr))
+    {
+        Address offset = ((Address)addr - (Address)zinfo->graphPrefetcherAddr) / GRAPH_PREFETCHER_ELE_SIZE;
+        curCycle = graphPrefetcher->store(offset, curCycle);
+    }
+    else
+    {
+        curCycle = l1d->store(addr, curCycle);
+    }
     cRec.record(startCycle);
 
     if (zinfo->numCores == 1){
@@ -126,7 +143,7 @@ void TimingCore::bblAndRecord(Address bblAddr, BblInfo* bblInfo) {
 
 
 InstrFuncPtrs TimingCore::GetFuncPtrs() {
-    return {LoadAndRecordFunc, StoreAndRecordFunc, BblAndRecordFunc, BranchFunc, PredLoadAndRecordFunc, PredStoreAndRecordFunc, OffloadBegin, OffloadEnd, FPTR_ANALYSIS, {0}};
+    return {LoadAndRecordFunc, StoreAndRecordFunc, BblAndRecordFunc, BranchFunc, PredLoadAndRecordFunc, PredStoreAndRecordFunc, OffloadBegin, OffloadEnd, PrefetcherLoadSrcFunc, PrefetcherLoadDestFunc, FPTR_ANALYSIS, {0}};
 }
 
 void TimingCore::OffloadBegin(THREADID tid) {
@@ -135,6 +152,15 @@ void TimingCore::OffloadBegin(THREADID tid) {
 void TimingCore::OffloadEnd(THREADID tid) {
     static_cast<TimingCore*>(cores[tid])->offloadFunction_end();
 }
+
+void TimingCore::PrefetcherLoadSrcFunc(THREADID tid, SrcInfo src) {
+    static_cast<TimingCore*>(cores[tid])->prefetcherLoadSrc(src);
+}
+
+void TimingCore::PrefetcherLoadDestFunc(THREADID tid, DestInfo dest) {
+    static_cast<TimingCore*>(cores[tid])->prefetcherLoadDest(dest);
+}
+
 void TimingCore::LoadAndRecordFunc(THREADID tid, ADDRINT addr, UINT32 size) {
     static_cast<TimingCore*>(cores[tid])->loadAndRecord(addr, size);
 }

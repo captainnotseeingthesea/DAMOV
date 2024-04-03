@@ -82,6 +82,16 @@ void TimingEvent::checkDomain(TimingEvent* ch) {
     //assert(domain == ch->domain || dynamic_cast<CrossingEvent*>(ch));
 }
 
+void PhaseEndEvent::parentDone(uint64_t startCycle) {
+    cycle = MAX(cycle, startCycle);
+    numParents--;
+    if (!numParents) {
+        uint64_t doneCycle = (phaseCycle < cycle) ? cycle : phaseCycle;
+        state = EV_QUEUED;
+        zinfo->contentionSim->enqueue(this, doneCycle);
+    } 
+}
+
 
 /* CrossingEvent */
 

@@ -33,11 +33,13 @@
 #include "pad.h"
 
 class FilterCache;
+class GraphPrefetcher;
 
 class SimpleCore : public Core {
     protected:
         FilterCache* l1i;
         FilterCache* l1d;
+        GraphPrefetcher *graphPrefetcher;
 
         uint64_t instrs;
         uint64_t curCycle;
@@ -47,7 +49,7 @@ class SimpleCore : public Core {
         bool offload_region = false;
 
     public:
-        SimpleCore(FilterCache* _l1i, FilterCache* _l1d, g_string& _name);
+        SimpleCore(FilterCache* _l1i, FilterCache* _l1d, GraphPrefetcher* _graphPrefetcher, g_string& _name);
         void offloadFunction_begin() {offload_region = true; }
         void offloadFunction_end() {offload_region = false; }
         int get_offload_code() { return 0; }
@@ -69,8 +71,15 @@ class SimpleCore : public Core {
         inline void load(Address addr, uint32_t size);
         inline void store(Address addr, uint32_t size);
         inline void bbl(Address bblAddr, BblInfo* bblInstrs);
+
+        inline void prefetcherLoadSrc(SrcInfo src) {graphPrefetcher->pushSrcInfo(src);}
+        inline void prefetcherLoadDest(DestInfo dest) {graphPrefetcher->pushDestInfo(dest);}
+        
         static void OffloadBegin(THREADID tid);
         static void OffloadEnd(THREADID tid);
+        // Prefetcher functions
+        static void PrefetcherLoadSrcFunc(THREADID tid, SrcInfo src);
+        static void PrefetcherLoadDestFunc(THREADID tid, DestInfo dest);
 
         static void LoadFunc(THREADID tid, ADDRINT addr, UINT32 size);
         static void StoreFunc(THREADID tid, ADDRINT addr, UINT32 size);

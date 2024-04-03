@@ -26,8 +26,11 @@
 #include "simple_core.h"
 #include "filter_cache.h"
 #include "zsim.h"
+#include "graph_prefetcher.h"
 
-SimpleCore::SimpleCore(FilterCache* _l1i, FilterCache* _l1d, g_string& _name) : Core(_name), l1i(_l1i), l1d(_l1d), instrs(0), curCycle(0), haltedCycles(0) {}
+
+SimpleCore::SimpleCore(FilterCache* _l1i, FilterCache* _l1d, GraphPrefetcher* _graphPrefetcher, g_string& _name)
+             : Core(_name), l1i(_l1i), l1d(_l1d), graphPrefetcher(_graphPrefetcher), instrs(0), curCycle(0), haltedCycles(0) {}
 
 void SimpleCore::initStats(AggregateStat* parentStat) {
     AggregateStat* coreStat = new AggregateStat();
@@ -53,12 +56,38 @@ void SimpleCore::OffloadEnd(THREADID tid) {
     static_cast<SimpleCore*>(cores[tid])->offloadFunction_end();
 }
 
+void SimpleCore::PrefetcherLoadSrcFunc(THREADID tid, SrcInfo src)
+{
+    static_cast<SimpleCore*>(cores[tid])->prefetcherLoadSrc(src);
+}
+
+void SimpleCore::PrefetcherLoadDestFunc(THREADID tid, DestInfo dest)
+{
+    static_cast<SimpleCore*>(cores[tid])->prefetcherLoadDest(dest);
+}
+
 void SimpleCore::load(Address addr, uint32_t size) {
-    curCycle = l1d->load(addr, curCycle);
+    if(inGraphPrefetcherAddr((void *)addr))
+    {
+        Address offset = ((Address)addr - (Address)zinfo->graphPrefetcherAddr) / GRAPH_PREFETCHER_ELE_SIZE;
+        curCycle = graphPrefetcher->load(offset, curCycle);
+    }
+    else
+    {
+        curCycle = l1d->load(addr, curCycle);
+    }
 }
 
 void SimpleCore::store(Address addr, uint32_t size) {
-    curCycle = l1d->store(addr, curCycle);
+    if(inGraphPrefetcherAddr((void *)addr))
+    {
+        Address offset = ((Address)addr - (Address)zinfo->graphPrefetcherAddr) / GRAPH_PREFETCHER_ELE_SIZE;
+        curCycle = graphPrefetcher->store(offset, curCycle);
+    }
+    else
+    {
+        curCycle = l1d->store(addr, curCycle);
+    }
 }
 
 void SimpleCore::bbl(Address bblAddr, BblInfo* bblInfo) {
@@ -95,7 +124,7 @@ void SimpleCore::join() {
 
 //Static class functions: Function pointers and trampolines
 InstrFuncPtrs SimpleCore::GetFuncPtrs() {
-    return {LoadFunc, StoreFunc, BblFunc, BranchFunc, PredLoadFunc, PredStoreFunc, OffloadBegin, OffloadEnd, FPTR_ANALYSIS, {0}};
+    return {LoadFunc, StoreFunc, BblFunc, BranchFunc, PredLoadFunc, PredStoreFunc, OffloadBegin, OffloadEnd, PrefetcherLoadSrcFunc, PrefetcherLoadDestFunc, FPTR_ANALYSIS, {0}};
 }
 
 void SimpleCore::LoadFunc(THREADID tid, ADDRINT addr, UINT32 size) {

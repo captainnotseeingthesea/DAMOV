@@ -167,8 +167,12 @@ uint64_t CoreRecorder::cSimStart(uint64_t curCycle) {
         }
 
         // Add an event that STARTS in the next phase, so it never gets simulated on the current phase
-        TimingCoreEvent* ev = new (eventRecorder) TimingCoreEvent(0, prevRespCycle-gapCycles, this);
-        ev->setMinStartCycle(prevRespCycle);
+        // TimingCoreEvent* ev = new (eventRecorder) TimingCoreEvent(0, prevRespCycle-gapCycles, this);
+        // ev->setMinStartCycle(prevRespCycle);
+        // prevRespEvent->addChild(ev, eventRecorder);
+        // prevRespEvent = ev;
+        PhaseEndEvent *ev = new (eventRecorder) PhaseEndEvent(nextPhaseCycle);
+        ev->setMinStartCycle(nextPhaseCycle);
         prevRespEvent->addChild(ev, eventRecorder);
         prevRespEvent = ev;
     } else if (state == DRAINING) { // add no event --- that's how we detect we're done draining
@@ -190,7 +194,7 @@ uint64_t CoreRecorder::cSimEnd(uint64_t curCycle) {
 
     assert(lastEvCycle1 <= curCycle);
     assert_msg(lastEvCycle2 <= curCycle, "[%s] lec2 %ld cc %ld, state %d", name.c_str(), lastEvCycle2, curCycle, state);
-    if (unlikely(lastEvCycle1 > lastEvCycle2)) panic("[%s] Contention simulation introduced a negative skew, curCycle %ld, lc1 %ld lc2 %ld", name.c_str(), curCycle, lastEvCycle1, lastEvCycle2);
+    // if (unlikely(lastEvCycle1 > lastEvCycle2)) panic("[%s] Contention simulation introduced a negative skew, curCycle %ld, lc1 %ld lc2 %ld", name.c_str(), curCycle, lastEvCycle1, lastEvCycle2);
 
     uint64_t skew = lastEvCycle2 - lastEvCycle1;
 

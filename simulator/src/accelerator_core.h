@@ -34,11 +34,13 @@
 #include <iostream>
 
 class FilterCache;
+class GraphPrefetcher;
 
 class AcceleratorCore : public Core {
     private:
         FilterCache* l1i;
         FilterCache* l1d;
+        GraphPrefetcher* graphPrefetcher;
 
         uint64_t instrs;
 
@@ -51,7 +53,7 @@ class AcceleratorCore : public Core {
 
 
     public:
-        AcceleratorCore(FilterCache* _l1i, FilterCache* _l1d, uint32_t domain, g_string& _name);
+        AcceleratorCore(FilterCache* _l1i, FilterCache* _l1d, GraphPrefetcher* _graphPrefetcher, uint32_t domain, g_string& _name);
         void offloadFunction_begin() {
              offload_region = true;
 		    }
@@ -86,8 +88,14 @@ class AcceleratorCore : public Core {
         inline void bblAndRecord(Address bblAddr, BblInfo* bblInstrs);
         inline void record(uint64_t startCycle);
 
+        inline void prefetcherLoadSrc(SrcInfo src) {graphPrefetcher->pushSrcInfo(src);}
+        inline void prefetcherLoadDest(DestInfo dest) {graphPrefetcher->pushDestInfo(dest);}
+
         static void OffloadBegin(THREADID tid);
         static void OffloadEnd(THREADID tid);
+        // Prefetcher functions
+        static void PrefetcherLoadSrcFunc(THREADID tid, SrcInfo src);
+        static void PrefetcherLoadDestFunc(THREADID tid, DestInfo dest);
 
         static void LoadAndRecordFunc(THREADID tid, ADDRINT addr, UINT32 size);
         static void StoreAndRecordFunc(THREADID tid, ADDRINT addr, UINT32 size);

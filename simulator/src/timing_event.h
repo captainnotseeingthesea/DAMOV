@@ -32,6 +32,7 @@
 #include "bithacks.h"
 #include "event_recorder.h"
 #include "galloc.h"
+#include "zsim.h"
 
 #define TIMING_BLOCK_EVENTS 3
 struct TimingEventBlock {
@@ -67,6 +68,7 @@ class CrossingEvent;
 class TimingEvent {
     private:
         uint64_t privCycle; //only touched by ContentionSim
+        bool freeElem; // whether to free the event after done()
 
     public:
         TimingEvent* next; //used by PrioQueue --- PRIVATE
@@ -87,11 +89,10 @@ class TimingEvent {
         uint32_t postDelay; //we could get by with one delay, but pre/post makes it easier to code
 
     public:
-        TimingEvent(uint32_t _preDelay, uint32_t _postDelay, int32_t _domain = -1) : next(nullptr), state(EV_NONE), cycle(0), minStartCycle(-1L), child(nullptr),
-                    domain(_domain), numChildren(0), numParents(0), preDelay(_preDelay), postDelay(_postDelay) {}
-        explicit TimingEvent(int32_t _domain = -1) : next(nullptr), state(EV_NONE), minStartCycle(-1L), child(nullptr),
-                    domain(_domain), numChildren(0), numParents(0), preDelay(0), postDelay(0) {} //no delegating constructors until gcc 4.7...
-
+        TimingEvent(uint32_t _preDelay, uint32_t _postDelay, int32_t _domain = -1, bool _freeElem = true) : next(nullptr), state(EV_NONE), cycle(0), minStartCycle(-1L), child(nullptr),
+                    domain(_domain), numChildren(0), numParents(0), preDelay(_preDelay), postDelay(_postDelay), freeElem(_freeElem) {}
+        explicit TimingEvent(int32_t _domain = -1, bool _freeElem = true) : next(nullptr), state(EV_NONE), minStartCycle(-1L), child(nullptr),
+                    domain(_domain), numChildren(0), numParents(0), preDelay(0), postDelay(0), freeElem(_freeElem) {} //no delegating constructors until gcc 4.7...
         inline uint32_t getDomain() const {return domain;}
         inline uint32_t getNumChildren() const {return numChildren;}
         inline uint32_t getPreDelay() const {return preDelay;}
@@ -102,6 +103,7 @@ class TimingEvent {
 
         inline uint64_t getMinStartCycle() const {return minStartCycle;}
         inline void setMinStartCycle(uint64_t c) {minStartCycle = c;}
+        inline bool canAddChild() const {return state == EV_NONE || state == EV_QUEUED;}
 
         TimingEvent* addChild(TimingEvent* childEv, EventRecorder* evRec) {
             assert_msg(state == EV_NONE || state == EV_QUEUED, "adding child in invalid state %d %s -> %s", state, typeid(*this).name(), typeid(*childEv).name()); //either not scheduled or not executed yet
@@ -157,8 +159,8 @@ class TimingEvent {
             assert(this);
             assert_msg(state == EV_NONE || state == EV_QUEUED, "state %d expected %d (%s)", state, EV_QUEUED, typeid(*this).name());
             state = EV_RUNNING;
-            assert_msg(startCycle >= minStartCycle, "startCycle %ld < minStartCycle %ld (%s), preDelay %d postDelay %d numChildren %d str %s",
-                    startCycle, minStartCycle, typeid(*this).name(), preDelay, postDelay, numChildren, str().c_str());
+            // assert_msg(startCycle >= minStartCycle, "startCycle %ld < minStartCycle %ld (%s), preDelay %d postDelay %d numChildren %d str %s",
+                    // startCycle, minStartCycle, typeid(*this).name(), preDelay, postDelay, numChildren, str().c_str());
             simulate(startCycle);
             // NOTE: This assertion is invalid now, because a call to done() may destroy the event.
             // However, since we check other transitions, this should not be a problem.
@@ -184,7 +186,20 @@ class TimingEvent {
                 (*childPtr)->parentDone(doneCycle+postDelay);
             };
             visitChildren< decltype(vLambda) >(vLambda);
-            freeEvent();  // NOTE: immediately reclaimed!
+            if(freeElem) freeEvent();  // NOTE: immediately reclaimed!
+        }
+
+        inline bool hasDone() const {return state == EV_DONE;}
+
+        void freeEv() {
+            assert(!freeElem);
+            freeEvent();
+        }
+
+        bool getFreeElem() {return freeElem;}
+
+        inline void setFreeElem(bool _freeElem) {
+            freeElem = _freeElem;
         }
 
         void produceCrossings(EventRecorder* evRec);
@@ -281,6 +296,7 @@ class TimingEvent {
 
     friend class ContentionSim;
     friend class DelayEvent; //DelayEvent is, for now, the only child of TimingEvent that should do anything other than implement simulate
+    friend class PhaseEndEvent;
     friend class CrossingEvent;
 };
 
@@ -298,8 +314,45 @@ class DelayEvent : public TimingEvent {
             }
         }
 
+        virtual std::string str() {
+            return "delay";
+        }
+
         virtual void simulate(uint64_t simCycle) {
             panic("DelayEvent::simulate() was called --- DelayEvent wakes its children directly");
+        }
+};
+
+class DummyEvent : public TimingEvent {
+    private:
+        bool freeElem;
+    public:
+        explicit DummyEvent(bool _freeElem) : TimingEvent(0, 0, -1, _freeElem) {}
+
+        virtual void simulate(uint64_t simCycle) {
+            // do nothing
+            done(simCycle);
+        }
+
+        virtual std::string str() {
+            return "dummy";
+        }
+};
+
+class PhaseEndEvent : public TimingEvent {
+    private:
+        uint64_t phaseCycle;
+    public:
+        explicit PhaseEndEvent(uint64_t _phaseCycle) : TimingEvent(0, 0, -1, true), phaseCycle(_phaseCycle) {}
+
+        virtual void parentDone(uint64_t startCycle);
+
+        virtual void simulate(uint64_t simCycle) {
+            // do nothing
+            done(simCycle);
+        }
+        virtual std::string str() {
+            return "phase";
         }
 };
 

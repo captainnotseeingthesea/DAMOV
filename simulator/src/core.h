@@ -31,6 +31,7 @@
 #include "decoder.h"
 #include "g_std/g_string.h"
 #include "stats.h"
+#include "graph_prefetcher.h"
 
 struct BbParseNode{
     uint64_t idx;
@@ -65,6 +66,10 @@ struct InstrFuncPtrs {  // NOLINT(whitespace)
     //OffloadEnd must 2) take a snapshot of the stats and 2) increment the stats with the delta between OffloadBegin
     void (*OffloadBegin)(THREADID); 
     void (*OffloadEnd)(THREADID); 
+
+    // Graph prefetcher. prefetched addr of the src and dest info
+    void (*prefetcherLoadSrc)(THREADID, SrcInfo);
+    void (*prefetcherLoadDest)(THREADID, DestInfo);
     uint64_t type;
     uint64_t pad[1];
     //NOTE: By having the struct be a power of 2 bytes, indirect calls are simpler (w/ gcc 4.4 -O3, 6->5 instructions, and those instructions are simpler)

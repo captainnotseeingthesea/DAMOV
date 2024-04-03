@@ -61,11 +61,14 @@ void NullCore::join() {
 
 InstrFuncPtrs NullCore::GetFuncPtrs() {
     //return {LoadFunc, StoreFunc, BblFunc, BranchFunc, PredLoadFunc, PredStoreFunc, FPTR_ANALYSIS, {0}};
-    return {LoadFunc, StoreFunc, BblFunc, BranchFunc, PredLoadFunc, PredStoreFunc, OffloadBegin, OffloadEnd, FPTR_ANALYSIS, {0}};
+    return {LoadFunc, StoreFunc, BblFunc, BranchFunc, PredLoadFunc, PredStoreFunc, OffloadBegin, OffloadEnd, PrefetcherLoadSrcFunc, PrefetcherLoadDestFunc, FPTR_ANALYSIS, {0}};
 }
 
 void NullCore::OffloadBegin(THREADID tid) {}
 void NullCore::OffloadEnd(THREADID tid) {}
+
+void NullCore::PrefetcherLoadSrcFunc(THREADID tid, SrcInfo src) {}
+void NullCore::PrefetcherLoadDestFunc(THREADID tid, DestInfo dst) {}
 
 void NullCore::LoadFunc(THREADID tid, ADDRINT addr, UINT32 size) {}
 void NullCore::StoreFunc(THREADID tid, ADDRINT addr, UINT32 size) {}

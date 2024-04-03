@@ -40,6 +40,7 @@
 // #define OOO_STALL_STATS
 
 class FilterCache;
+class GraphPrefetcher;
 
 /* 2-level branch predictor:
  *  - L1: Branch history shift registers (bshr): 2^NB entries, HB bits of history/entry, indexed by XOR'd PC
@@ -367,6 +368,7 @@ class OOOCore : public Core {
 
         FilterCache* l1i;
         FilterCache* l1d;
+        GraphPrefetcher *graphPrefetcher;
 
         uint64_t phaseEndCycle; //next stopping point
 
@@ -447,7 +449,7 @@ class OOOCore : public Core {
         OOOCoreRecorder cRec;
 
     public:
-        OOOCore(FilterCache* _l1i, FilterCache* _l1d, g_string& _name);
+        OOOCore(FilterCache* _l1i, FilterCache* _l1d, GraphPrefetcher* _graphPrefetcher, g_string& _name);
         void offloadFunction_begin() {
             offload_region = true;
         }
@@ -477,6 +479,9 @@ class OOOCore : public Core {
         inline void load(Address addr, uint32_t size);
         inline void store(Address addr, uint32_t size);
 
+        inline void prefetcherLoadSrc(SrcInfo src) {graphPrefetcher->pushSrcInfo(src);}
+        inline void prefetcherLoadDest(DestInfo dest) {graphPrefetcher->pushDestInfo(dest);}
+
         /* NOTE: Analysis routines cannot touch curCycle directly, must use
          * advance() for long jumps or insWindow.advancePos() for 1-cycle
          * jumps.
@@ -496,6 +501,10 @@ class OOOCore : public Core {
         inline void bbl(Address bblAddr, BblInfo* bblInfo);
         static void OffloadBegin(THREADID tid);
         static void OffloadEnd(THREADID tid);  
+
+        // Prefetcher functions
+        static void PrefetcherLoadSrcFunc(THREADID tid, SrcInfo src);
+        static void PrefetcherLoadDestFunc(THREADID tid, DestInfo dest);
 
         static void LoadFunc(THREADID tid, ADDRINT addr, UINT32 size);
         static void StoreFunc(THREADID tid, ADDRINT addr, UINT32 size);

@@ -59,6 +59,9 @@ class NullCore : public Core {
         static void OffloadBegin(THREADID tid);
         static void OffloadEnd(THREADID tid);
 
+        static void PrefetcherLoadSrcFunc(THREADID tid, SrcInfo src);
+        static void PrefetcherLoadDestFunc(THREADID tid, DestInfo dst);
+
         static void LoadFunc(THREADID tid, ADDRINT addr, UINT32 size);
         static void StoreFunc(THREADID tid, ADDRINT addr, UINT32 size);
         static void BblFunc(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo);

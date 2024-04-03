@@ -62,6 +62,7 @@
 #include "stats.h"
 #include "trace_driver.h"
 #include "virt/virt.h"
+#include "graph_prefetcher.h"
 
 //#include <signal.h> //can't include this, conflicts with PIN's
 
@@ -117,6 +118,16 @@ static uint32_t cids[MAX_THREADS];
 
 // Per TID core pointers (TODO: phase out cid/tid state --- this is enough)
 Core* cores[MAX_THREADS];
+
+// Graph prefetcher related data
+GraphPrefetcherParams graphPrefetcherParams;
+GraphPrefetcherUnit graphPrefetcherUnit[MAX_THREADS];
+
+inline bool inGraphPrefetcherAddr(void * addr)
+{
+    void * prefetcher_addr = zinfo->graphPrefetcherAddr;
+    return addr >= prefetcher_addr && addr <= (static_cast<UINT64 *>(prefetcher_addr) + zinfo->graphPrefetcherAddrRegion);
+}
 
 static inline void clearCid(uint32_t tid) {
     assert(tid < MAX_THREADS);
@@ -253,6 +264,17 @@ VOID JoinAndOffloadEnd(THREADID tid){
     Join(tid);
     fPtrs[tid].OffloadEnd(tid);
 }
+
+VOID JoinAndPrefetcherLoadSrc(THREADID tid, SrcInfo src) {
+    Join(tid);
+    fPtrs[tid].prefetcherLoadSrc(tid, src);
+}
+
+VOID JoinAndPrefetcherLoadDest(THREADID tid, DestInfo dest) {
+    Join(tid);
+    fPtrs[tid].prefetcherLoadDest(tid, dest);
+}
+
 // NOP variants: Do nothing
 VOID NOPLoadStoreSingle(THREADID tid, ADDRINT addr, UINT32 size) {}
 VOID NOPBasicBlock(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {}
@@ -260,6 +282,8 @@ VOID NOPRecordBranch(THREADID tid, ADDRINT addr, BOOL taken, ADDRINT takenNpc, A
 VOID NOPPredLoadStoreSingle(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size) {}
 VOID NOPPredOffloadBegin(THREADID tid) {}
 VOID NOPPredOffloadEnd(THREADID tid) {} 
+VOID NOPPrefetcherLoadSrc(THREADID tid, SrcInfo src) {}
+VOID NOPPrefetcherLoadDest(THREADID tid, DestInfo dest) {}
 
 // FF is basically NOP except for basic blocks
 VOID FFBasicBlock(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {
@@ -381,13 +405,13 @@ VOID FFIEntryBasicBlock(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {
 }
 
 // Non-analysis pointer vars
-static const InstrFuncPtrs joinPtrs = {JoinAndLoadSingle, JoinAndStoreSingle, JoinAndBasicBlock, JoinAndRecordBranch, JoinAndPredLoadSingle, JoinAndPredStoreSingle, JoinAndOffloadBegin, JoinAndOffloadEnd, FPTR_JOIN};
-static const InstrFuncPtrs nopPtrs = {NOPLoadStoreSingle, NOPLoadStoreSingle, NOPBasicBlock, NOPRecordBranch, NOPPredLoadStoreSingle, NOPPredLoadStoreSingle, NOPPredOffloadBegin, NOPPredOffloadEnd, FPTR_NOP};
-static const InstrFuncPtrs retryPtrs = {NOPLoadStoreSingle, NOPLoadStoreSingle, NOPBasicBlock, NOPRecordBranch, NOPPredLoadStoreSingle, NOPPredLoadStoreSingle, NOPPredOffloadBegin, NOPPredOffloadEnd, FPTR_RETRY};
-static const InstrFuncPtrs ffPtrs = {NOPLoadStoreSingle, NOPLoadStoreSingle, FFBasicBlock, NOPRecordBranch, NOPPredLoadStoreSingle, NOPPredLoadStoreSingle, NOPPredOffloadBegin, NOPPredOffloadEnd, FPTR_NOP};
+static const InstrFuncPtrs joinPtrs = {JoinAndLoadSingle, JoinAndStoreSingle, JoinAndBasicBlock, JoinAndRecordBranch, JoinAndPredLoadSingle, JoinAndPredStoreSingle, JoinAndOffloadBegin, JoinAndOffloadEnd, JoinAndPrefetcherLoadSrc, JoinAndPrefetcherLoadDest, FPTR_JOIN};
+static const InstrFuncPtrs nopPtrs = {NOPLoadStoreSingle, NOPLoadStoreSingle, NOPBasicBlock, NOPRecordBranch, NOPPredLoadStoreSingle, NOPPredLoadStoreSingle, NOPPredOffloadBegin, NOPPredOffloadEnd, NOPPrefetcherLoadSrc, NOPPrefetcherLoadDest, FPTR_NOP};
+static const InstrFuncPtrs retryPtrs = {NOPLoadStoreSingle, NOPLoadStoreSingle, NOPBasicBlock, NOPRecordBranch, NOPPredLoadStoreSingle, NOPPredLoadStoreSingle, NOPPredOffloadBegin, NOPPredOffloadEnd, NOPPrefetcherLoadSrc, NOPPrefetcherLoadDest, FPTR_RETRY};
+static const InstrFuncPtrs ffPtrs = {NOPLoadStoreSingle, NOPLoadStoreSingle, FFBasicBlock, NOPRecordBranch, NOPPredLoadStoreSingle, NOPPredLoadStoreSingle, NOPPredOffloadBegin, NOPPredOffloadEnd, NOPPrefetcherLoadSrc, NOPPrefetcherLoadDest, FPTR_NOP};
 
-static const InstrFuncPtrs ffiPtrs = {NOPLoadStoreSingle, NOPLoadStoreSingle, FFIBasicBlock, NOPRecordBranch, NOPPredLoadStoreSingle, NOPPredLoadStoreSingle, NOPPredOffloadBegin, NOPPredOffloadEnd, FPTR_NOP};
-static const InstrFuncPtrs ffiEntryPtrs = {NOPLoadStoreSingle, NOPLoadStoreSingle, FFIEntryBasicBlock, NOPRecordBranch, NOPPredLoadStoreSingle, NOPPredLoadStoreSingle, NOPPredOffloadBegin, NOPPredOffloadEnd, FPTR_NOP};
+static const InstrFuncPtrs ffiPtrs = {NOPLoadStoreSingle, NOPLoadStoreSingle, FFIBasicBlock, NOPRecordBranch, NOPPredLoadStoreSingle, NOPPredLoadStoreSingle, NOPPredOffloadBegin, NOPPredOffloadEnd, NOPPrefetcherLoadSrc, NOPPrefetcherLoadDest, FPTR_NOP};
+static const InstrFuncPtrs ffiEntryPtrs = {NOPLoadStoreSingle, NOPLoadStoreSingle, FFIEntryBasicBlock, NOPRecordBranch, NOPPredLoadStoreSingle, NOPPredLoadStoreSingle, NOPPredOffloadBegin, NOPPredOffloadEnd, NOPPrefetcherLoadSrc, NOPPrefetcherLoadDest, FPTR_NOP};
 
 static const InstrFuncPtrs& GetFFPtrs() {
     return ffiEnabled? (ffiNFF? ffiEntryPtrs : ffiPtrs) : ffPtrs;
@@ -572,6 +596,186 @@ static void PrintIp(THREADID tid, ADDRINT ip) {
 }
 #endif
 
+// Set the graph prefetcher addr
+VOID InstrumentConfig(VOID * addr)
+{
+    info("Configure graph prefetcher addr: %p", addr);
+    zinfo->graphPrefetcherAddr = addr;
+}
+
+// Called when a image is loaded
+VOID ImageLoad(IMG img, VOID *v)
+{
+    // Instrument the prefetcher configure function to get the prefetcher addr
+    RTN addRtn = RTN_FindByName(img, zinfo->graphPrefetcherConfigFunc);
+    if (RTN_Valid(addRtn))
+    {
+        RTN_Open(addRtn);
+        // 在函数入口处插入插桩例程
+        RTN_InsertCall(addRtn, IPOINT_BEFORE, (AFUNPTR)InstrumentConfig, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_END);
+        
+        RTN_Close(addRtn);
+    }
+}
+
+// Used to get the prefetched data
+void get_info(THREADID tid, int64_t node)
+{
+    int64_t src_property = *((int64_t *)graphPrefetcherParams.property + node);
+    graphPrefetcherUnit[tid].srcInfo.push_back((GraphSrcInfo){node, src_property});
+    int start = *((int *)graphPrefetcherParams.offset + node);
+    int end = *((int *)graphPrefetcherParams.offset + node + 1);
+    for(int i = start; i < end; ++i)
+    {
+        int neighbor = *((int *)graphPrefetcherParams.edge + i);
+        int64_t weight = *((int64_t *)graphPrefetcherParams.weight + i);
+        int64_t dest_property = *((int64_t *)graphPrefetcherParams.property + neighbor);
+        graphPrefetcherUnit[tid].destInfo.push_back((GraphDestInfo){neighbor, weight, dest_property});
+    }
+}
+
+// Used to get the addr to be prefetched
+void getPrefetchingAddr(THREADID tid, int64_t node)
+{
+
+    Address offsetStart = (Address)((int *)graphPrefetcherParams.offset + node);
+    Address offsetEnd = (Address)((int *)graphPrefetcherParams.offset + node + 1);
+    Address srcProperty = (Address)((int64_t *)graphPrefetcherParams.property + node);
+    int start = *((int *)graphPrefetcherParams.offset + node);
+    int end = *((int *)graphPrefetcherParams.offset + node + 1);
+    uint32_t numNeighbors = end - start;
+    fPtrs[tid].prefetcherLoadSrc(tid, (SrcInfo){srcProperty, offsetStart, offsetEnd, numNeighbors});
+    for(int i = start; i < end; ++i)
+    {
+        int neighbor = *((int *)graphPrefetcherParams.edge + i);
+        Address edge = (Address)((int *)graphPrefetcherParams.edge + i);
+        Address weight = (Address)((int64_t *)graphPrefetcherParams.weight + i);
+        Address destProperty = (Address)((int64_t *)graphPrefetcherParams.property + neighbor);
+        fPtrs[tid].prefetcherLoadDest(tid, (DestInfo){edge, weight, destProperty});
+    }
+}
+
+// Used to set the parameters of the graph prefetchers
+VOID PIN_FAST_ANALYSIS_CALL setGraphPrefetcher(VOID *addr, ADDRINT val, THREADID tid)
+{
+    // 判断addr是否在指定的内存地址范围内
+    if(inGraphPrefetcherAddr(addr))
+    {
+        uint32_t index = ((uint64_t)addr - (uint64_t)zinfo->graphPrefetcherAddr) / GRAPH_PREFETCHER_ELE_SIZE;
+        switch (index)
+        {
+        case OFFSET_INDEX:
+            graphPrefetcherParams.offset = val;
+            // std::cout << "offset: " << graphPrefetcherParams.offset << std::endl;
+            break;
+        case EDGE_INDEX:
+            graphPrefetcherParams.edge = val;
+            // std::cout << "edge: " << graphPrefetcherParams.edge << std::endl;
+            break;
+        case WEIGHT_INDEX:
+            graphPrefetcherParams.weight = val;
+            // std::cout << "weight: " << graphPrefetcherParams.weight << std::endl;
+            break;
+        case PROPERTY_INDEX:
+            graphPrefetcherParams.property = val;
+            // std::cout << "property: " << graphPrefetcherParams.property << std::endl;
+            break;
+        case SRC_NODE_INDEX:
+            get_info(tid, val);
+            // std::cout << "src_node: " << graphPrefetcherUnit[tid].src_node << std::endl;
+            break;
+        default:
+            panic("invalid index");
+            break;
+        }
+    }
+}
+
+// Used to get the data from prefetcher
+ADDRINT PIN_FAST_ANALYSIS_CALL getFromGraphPrefetcher(void * addr, THREADID tid)
+{
+    ADDRINT value;
+    if(inGraphPrefetcherAddr(addr))
+    {
+        uint32_t index = ((uint64_t)addr - (uint64_t)zinfo->graphPrefetcherAddr) / GRAPH_PREFETCHER_ELE_SIZE;
+        ADDRINT data = 0;
+
+        switch (index)
+        {
+        case UPDATES_SIZE_INDEX:
+            data = graphPrefetcherUnit[tid].destInfo.size();
+            break;
+        case SRC_PROPERTY_INDEX:
+            if(!graphPrefetcherUnit[tid].srcInfo.empty()){
+                data = graphPrefetcherUnit[tid].srcInfo.front().src_property;
+                graphPrefetcherUnit[tid].srcInfo.erase(graphPrefetcherUnit[tid].srcInfo.begin());
+            }
+            else
+            {
+                panic("no src node to fetch!!!");
+            }
+            break;
+        case DEST_NODE_INDEX:
+            if(graphPrefetcherUnit[tid].readyBits & (1 << DEST_NODE) && (!graphPrefetcherUnit[tid].destInfo.empty()))
+            {
+                data = graphPrefetcherUnit[tid].destInfo.front().dest_node;
+                graphPrefetcherUnit[tid].readyBits &= ~(1 << DEST_NODE);
+            }
+            else
+            {
+                panic("no dest node to fetch!!!");
+            }
+            break;
+        case WEIGHT_VALUE_INDEX:
+            if(graphPrefetcherUnit[tid].readyBits & (1 << WEIGHT_VALUE) && (!graphPrefetcherUnit[tid].destInfo.empty()))
+            {
+                data = graphPrefetcherUnit[tid].destInfo.front().weight_value;
+                graphPrefetcherUnit[tid].readyBits &= ~(1 << WEIGHT_VALUE);
+            }
+            else
+            {
+                panic("no weight value to fetch!!!");
+            }
+            break;
+        case DEST_PROPERTY_INDEX:
+            if(graphPrefetcherUnit[tid].readyBits & (1 << DEST_PROPERTY) && (!graphPrefetcherUnit[tid].destInfo.empty()))
+            {
+                data = graphPrefetcherUnit[tid].destInfo.front().dest_property;
+                graphPrefetcherUnit[tid].readyBits &= ~(1 << DEST_PROPERTY);
+            }
+            else
+            {
+                panic("no dest property to fetch!!!");
+            }
+            break;
+        default:
+            panic("invalid index!!!");
+        }     
+        if(graphPrefetcherUnit[tid].readyBits == 0)
+        {
+            graphPrefetcherUnit[tid].destInfo.erase(graphPrefetcherUnit[tid].destInfo.begin());
+            graphPrefetcherUnit[tid].readyBits = GRAPH_DATA_READY;
+        }
+        PIN_SafeCopy(&value, &data, sizeof(ADDRINT));
+        return value;
+    }
+    PIN_SafeCopy(&value, addr, sizeof(ADDRINT));
+    return value;
+}
+
+VOID PIN_FAST_ANALYSIS_CALL getGraphPrefetchingAddr(VOID *addr, ADDRINT val, THREADID tid)
+{
+    if(inGraphPrefetcherAddr(addr))
+    {
+        uint32_t index = ((uint64_t)addr - (uint64_t)zinfo->graphPrefetcherAddr) / GRAPH_PREFETCHER_ELE_SIZE;
+        if(index == SRC_NODE_INDEX)
+        {
+            int64_t node = val;
+            getPrefetchingAddr(tid, node);
+        }
+    }
+}
+
 VOID Instruction(INS ins) {
     //Uncomment to print an instruction trace
     //INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)PrintIp, IARG_THREAD_ID, IARG_REG_VALUE, REG_INST_PTR, IARG_END);
@@ -582,6 +786,24 @@ VOID Instruction(INS ins) {
 
         AFUNPTR PredLoadFuncPtr = (AFUNPTR) IndirectPredLoadSingle;
         AFUNPTR PredStoreFuncPtr = (AFUNPTR) IndirectPredStoreSingle;
+
+        // Instrument the graph prefetcher operations 
+        if (INS_Opcode(ins) == XED_ICLASS_MOV &&
+            INS_IsMemoryWrite(ins)  &&
+            INS_OperandIsReg(ins, 1) &&
+            INS_OperandIsMemory(ins, 0)
+            )
+        {
+            REG reg = REG_FullRegName(INS_OperandReg(ins, 1));
+            INS_InsertCall(ins, 
+                        IPOINT_BEFORE, 
+                        (AFUNPTR)getGraphPrefetchingAddr, 
+                        IARG_FAST_ANALYSIS_CALL,
+                        IARG_MEMORYWRITE_PTR, 
+                        IARG_REG_VALUE, reg, 
+                        IARG_THREAD_ID, 
+                        IARG_END);
+        }
 
         if (INS_IsMemoryRead(ins)) {
             if (!INS_IsPredicated(ins)) {
@@ -612,6 +834,43 @@ VOID Instruction(INS ins) {
             INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) IndirectRecordBranch, IARG_FAST_ANALYSIS_CALL, IARG_THREAD_ID,
                     IARG_INST_PTR, IARG_BRANCH_TAKEN, IARG_BRANCH_TARGET_ADDR, IARG_FALLTHROUGH_ADDR, IARG_END);
         }
+    }
+
+    // Process graph prefetcher API (implemented with load and store operation)
+    if (INS_Opcode(ins) == XED_ICLASS_MOV &&
+        INS_IsMemoryWrite(ins)  &&
+        INS_OperandIsReg(ins, 1) &&
+        INS_OperandIsMemory(ins, 0)
+        )
+    {
+        REG reg = REG_FullRegName(INS_OperandReg(ins, 1));
+        INS_InsertCall(ins, 
+                    IPOINT_BEFORE, 
+                    (AFUNPTR)setGraphPrefetcher, 
+                    IARG_FAST_ANALYSIS_CALL,
+                    IARG_MEMORYWRITE_PTR, 
+                    IARG_REG_VALUE, reg, 
+                    IARG_THREAD_ID, 
+                    IARG_END);
+    }
+
+    if(INS_Opcode(ins) == XED_ICLASS_MOV &&
+        INS_IsMemoryRead(ins) &&
+        INS_OperandIsReg(ins, 0) &&
+        INS_OperandIsMemory(ins, 1))
+    {
+        INS_InsertCall(ins,
+                       IPOINT_BEFORE,
+                       AFUNPTR(getFromGraphPrefetcher),
+                       IARG_FAST_ANALYSIS_CALL,
+                       IARG_MEMORYREAD_EA,
+                       IARG_THREAD_ID,
+                       IARG_RETURN_REGS,
+                       INS_OperandReg(ins, 0),
+                       IARG_END);
+
+        // Delete the instruction
+        INS_Delete(ins);
     }
 
     //Intercept and process magic ops
@@ -865,7 +1124,7 @@ uint32_t CountActiveThreads() {
 }
 
 void SimThreadStart(THREADID tid) {
-    //info("Thread %d starting", tid);
+    info("Thread %d starting", tid);
     if (tid > MAX_THREADS) panic("tid > MAX_THREADS");
     zinfo->sched->start(procIdx, tid, procTreeNode->getMask());
     activeThreads[tid] = true;
@@ -926,11 +1185,11 @@ VOID SimThreadFini(THREADID tid) {
 VOID ThreadFini(THREADID tid, const CONTEXT *ctxt, INT32 flags, VOID *v) {
     //NOTE: Thread has no valid cid here!
     if (fPtrs[tid].type == FPTR_NOP) {
-        //info("Shadow/NOP thread %d finished", tid);
+        info("Shadow/NOP thread %d finished", tid);
         return;
     } else {
         SimThreadFini(tid);
-        //info("Thread %d finished", tid);
+        info("Thread %d finished", tid);
     }
 }
 
@@ -1606,6 +1865,9 @@ int main(int argc, char *argv[]) {
     //Register instrumentation
     TRACE_AddInstrumentFunction(Trace, 0);
     VdsoInit(); //initialized vDSO patching information (e.g., where all the possible vDSO entry points are)
+
+    // Register image instrumentation
+    IMG_AddInstrumentFunction(ImageLoad, 0);
 
     PIN_AddThreadStartFunction(ThreadStart, 0);
     PIN_AddThreadFiniFunction(ThreadFini, 0);

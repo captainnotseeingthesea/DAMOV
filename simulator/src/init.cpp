@@ -79,6 +79,7 @@
 #include "virt/port_virtualizer.h"
 #include "weave_md1_mem.h"
 #include "zsim.h"
+#include "graph_prefetcher.h"
 
 std::string application_path;
 extern void EndOfPhaseActions(); //in zsim.cpp
@@ -404,7 +405,7 @@ CacheGroup* BuildCacheGroup(Config& config, const string& name, bool isTerminal)
     uint32_t banks = config.get<uint32_t>(prefix + "banks", 1);
     uint32_t caches = config.get<uint32_t>(prefix + "caches", 1);
 
-    cout << "Cache " << prefix << " has " << size << " (" << (size/(1024*1024)) << " MB \n";
+    // cout << "Cache " << prefix << " has " << size << " (" << (size/(1024*1024)) << " MB \n";
 
     uint32_t bankSize = size/banks;
     if (size % banks != 0) {
@@ -424,6 +425,35 @@ CacheGroup* BuildCacheGroup(Config& config, const string& name, bool isTerminal)
             ss << name << "-" << i;
             g_string pfName(ss.str().c_str());
             cg[i][0] = new StreamPrefetcher(pfName,bankSize/zinfo->lineSize, entrySize);
+        }
+        return cgp;
+    }
+
+    // Graph prefetcher specialized for graph processing
+    bool isGraphPrefetcher = config.get<bool>(prefix + "isGraphPrefetcher", false);
+    zinfo->graphPrefetcherConfigFunc = gm_strdup("config_prefetcher");
+    if(isGraphPrefetcher)
+    {
+        uint32_t prefetchers = config.get<uint32_t>(prefix + "prefetchers", 1);
+        uint32_t entrySize = config.get<uint32_t>(prefix + "entries", 32);
+        uint32_t latency = config.get<uint32_t>(prefix + "latency", 0);
+        assert(entrySize > 0);
+
+        // Get the config function name of graph prefetcher
+        const char *graphPrefetcherConfigFunc = config.get<const char*>(prefix + "configFunc", "config_prefetcher");
+        zinfo->graphPrefetcherConfigFunc = gm_strdup(graphPrefetcherConfigFunc);
+
+        // Get the addr region for graph prefetcher
+        uint32_t addrRegion = config.get<uint32_t>(prefix + "addrRegion", 16);
+        zinfo->graphPrefetcherAddrRegion = addrRegion;
+
+        cg.resize(prefetchers);
+        for (vector<BaseCache*>& bg : cg) bg.resize(1);
+        for (uint32_t i = 0; i < prefetchers; i++) {
+            stringstream ss;
+            ss << name << "-" << i;
+            g_string pfName(ss.str().c_str());
+            cg[i][0] = new GraphPrefetcher(pfName, entrySize, latency);
         }
         return cgp;
     }
@@ -691,9 +721,11 @@ static void InitSystem(Config& config) {
             if (type != "Null") {
                 string icache = config.get<const char*>(prefix + "icache");
                 string dcache = config.get<const char*>(prefix + "dcache");
+                string prefetcher = config.get<const char *>(prefix + "prefetcher", "none");
 
                 if (!assignedCaches.count(icache)) panic("%s: Invalid icache parameter %s", group, icache.c_str());
                 if (!assignedCaches.count(dcache)) panic("%s: Invalid dcache parameter %s", group, dcache.c_str());
+                if (prefetcher != "none" && !assignedCaches.count(prefetcher)) panic("%s: Invalid prefetcher parameter %s", group, prefetcher.c_str());
 
                 for (uint32_t j = 0; j < cores; j++) {
                     stringstream ss;
@@ -704,6 +736,21 @@ static void InitSystem(Config& config) {
                     //Get the caches
                     CacheGroup& igroup = *cMap[icache];
                     CacheGroup& dgroup = *cMap[dcache];
+
+                    // Get the prefetchers
+                    GraphPrefetcher* pc = nullptr;
+                    if(prefetcher != "none")
+                    {
+                        CacheGroup& pgroup = *cMap[prefetcher];
+                        if(assignedCaches[prefetcher] >= pgroup.size())
+                        {
+                            panic("%s: prefetcher group %s (%ld prefetcher) is fully used, can't connect more cores to it", name.c_str(), prefetcher.c_str(), pgroup.size());
+                        }
+                        pc = dynamic_cast<GraphPrefetcher*>(pgroup[assignedCaches[prefetcher]][0]);
+                        assert(pc);
+                        pc->setSourceId(coreIdx);
+                        assignedCaches[prefetcher]++;
+                    }
 
                     if (assignedCaches[icache] >= igroup.size()) {
                         panic("%s: icache group %s (%ld caches) is fully used, can't connect more cores to it", name.c_str(), icache.c_str(), igroup.size());
@@ -724,22 +771,22 @@ static void InitSystem(Config& config) {
 
                     //Build the core
                     if (type == "Simple") {
-                        core = new (&simpleCores[j]) SimpleCore(ic, dc, name);
+                        core = new (&simpleCores[j]) SimpleCore(ic, dc, pc, name);
                     } else if (type == "Timing") {
                         uint32_t domain = j*zinfo->numDomains/cores;
-                        TimingCore* tcore = new (&timingCores[j]) TimingCore(ic, dc, domain, name);
+                        TimingCore* tcore = new (&timingCores[j]) TimingCore(ic, dc, pc, domain, name);
                         zinfo->eventRecorders[coreIdx] = tcore->getEventRecorder();
                         zinfo->eventRecorders[coreIdx]->setSourceId(coreIdx);
                         core = tcore;
                     } else if (type == "Accelerator") {
                         uint32_t domain = j*zinfo->numDomains/cores;
-                        AcceleratorCore* acore = new (&acceleratorCores[j]) AcceleratorCore(ic, dc, domain, name);
+                        AcceleratorCore* acore = new (&acceleratorCores[j]) AcceleratorCore(ic, dc, pc, domain, name);
                         zinfo->eventRecorders[coreIdx] = acore->getEventRecorder();
                         zinfo->eventRecorders[coreIdx]->setSourceId(coreIdx);
                         core = acore;
                       } else {
                         assert(type == "OOO");
-                        OOOCore* ocore = new (&oooCores[j]) OOOCore(ic, dc, name);
+                        OOOCore* ocore = new (&oooCores[j]) OOOCore(ic, dc, pc, name);
                         zinfo->eventRecorders[coreIdx] = ocore->getEventRecorder();
                         zinfo->eventRecorders[coreIdx]->setSourceId(coreIdx);
                         core = ocore;
