@@ -1,6 +1,8 @@
 3 3 3
 l1i-0 l2-0 0 0
 l1d-0 l2-0 0 0
+l1d-0 l2prefetcher-0 0 0
+l2prefetcher-0 l2-0 0 0
 l3-0b0 mem-0 1 1 0 0 0
 l2-0 l3-0b0 1 1 0 1 0
 l2-0 l3-0b1 1 1 0 2 0
@@ -8,6 +10,8 @@ l2-0 l3-0b2 1 1 0 0 1
 l2-0 l3-0b3 1 1 0 1 1
 l1i-1 l2-1 0 0
 l1d-1 l2-1 0 0
+l1d-1 l2prefetcher-1 0 0
+l2prefetcher-1 l2-1 0 0
 l3-0b1 mem-0 1 2 0 0 0
 l2-1 l3-0b0 1 2 0 1 0
 l2-1 l3-0b1 1 2 0 2 0
@@ -15,6 +19,8 @@ l2-1 l3-0b2 1 2 0 0 1
 l2-1 l3-0b3 1 2 0 1 1
 l1i-2 l2-2 0 0
 l1d-2 l2-2 0 0
+l1d-2 l2prefetcher-2 0 0
+l2prefetcher-2 l2-2 0 0
 l3-0b2 mem-0 1 0 1 0 0
 l2-2 l3-0b0 1 0 1 1 0
 l2-2 l3-0b1 1 0 1 2 0
@@ -22,6 +28,8 @@ l2-2 l3-0b2 1 0 1 0 1
 l2-2 l3-0b3 1 0 1 1 1
 l1i-3 l2-3 0 0
 l1d-3 l2-3 0 0
+l1d-3 l2prefetcher-3 0 0
+l2prefetcher-3 l2-3 0 0
 l3-0b3 mem-0 1 1 1 0 0
 l2-3 l3-0b0 1 1 1 1 0
 l2-3 l3-0b1 1 1 1 2 0
