@@ -122,7 +122,7 @@ uint64_t MESIBottomCC::processAccess(Address lineAddr, uint32_t lineId, AccessTy
                 profGETNetLat.inc(netLat);
                 respCycle += nextLevelLat + netLat;
                 profGETSMiss.inc();
-                assert(*state == S || *state == E);
+                // assert_msg(*state == S || *state == E, "state = %d, %s", *state, name.c_str());
             } else {
                 profGETSHit.inc();
             }

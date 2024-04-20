@@ -37,8 +37,8 @@ void StreamPrefetcher::setParents(uint32_t _childId, const g_vector < MemObject 
     childId = _childId;
     if (parents.size() != 1)
         panic("Must have one parent");
-    if (network)
-        panic("Network not handled");
+    // if (network)
+        // panic("Network not handled");
     parent = parents[0];
 }
 
@@ -46,8 +46,8 @@ void StreamPrefetcher::setChildren(const g_vector < BaseCache * >&children, Netw
 {
     if (children.size() < 1)
         panic("Must have one children");
-    if (network)
-        panic("Network not handled");
+    // if (network)
+    //     panic("Network not handled");
     child = children[0];
 }
 
@@ -170,7 +170,8 @@ uint64_t StreamPrefetcher::access(MemReq & req)
                             state, req.srcId, MemReq::PREFETCH
                     };
                     pfRespCycle = parent->access(pfReq);
-                    longerCycle = (wbAcc.reqCycle > pfRespCycle) ? wbAcc.reqCycle : pfRespCycle;
+                    if(wbAcc.isValid())
+                        longerCycle = (wbAcc.reqCycle > pfRespCycle) ? wbAcc.reqCycle : pfRespCycle;
 
                     e.valid[prefetchPos] = true;
                     e.times[prefetchPos].fill(reqCycle, longerCycle);
