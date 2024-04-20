@@ -1,0 +1,2 @@
+graph,bfs,wiki_talk,WORKLOAD_ROOT/GRAPH/graph --graph_file WORKLOAD_ROOT/GRAPH/dataset/wiki-Talk.w.txt --start_node 2,normal
+graph,bfs,wiki_talk,WORKLOAD_ROOT/GRAPH/graph --with_prefetcher --graph_file WORKLOAD_ROOT/GRAPH/dataset/wiki-Talk.w.txt --start_node 2,graph
