@@ -199,8 +199,8 @@ struct GlobSimInfo {
 
     // Configure of graph prefetcher, used for instrumentation
     const char * graphPrefetcherConfigFunc; // function name
-    void * graphPrefetcherAddr; // start addr
-    uint32_t graphPrefetcherAddrRegion; // addr region
+    void * graphPrefetcherAddr = 0; // start addr
+    uint32_t graphPrefetcherAddrRegion = 0; // addr region
 };
 
 
@@ -217,7 +217,7 @@ uint32_t getCid(uint32_t tid);
 uint32_t TakeBarrier(uint32_t tid, uint32_t cid);
 void SimEnd(); //only call point out of zsim.cpp should be watchdog threads
 
-inline bool inGraphPrefetcherAddr(void* addr);
+bool inGraphPrefetcherAddr(void* addr);
 
 //std::ofstream dram_requests_phases;
 #endif  // ZSIM_H_

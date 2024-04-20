@@ -213,7 +213,6 @@ void OOOCore::store(Address addr, uint32_t size) {
 void OOOCore::predFalseMemOp() {
     // I'm going to go out on a limb and assume just loads are predicated (this will not fail silently if it's a store)
     loadAddrs[loads] = -1L;
-    loadAddrs[loads] = 0;
     loads++;
 }
 
@@ -365,7 +364,15 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
 
                     uint64_t reqSatisfiedCycle = dispatchCycle;
                     if (addr != ((Address)-1L)) {
-                        reqSatisfiedCycle = l1d->load(addr, dispatchCycle) + L1D_LAT;
+                        if(inGraphPrefetcherAddr((void *)addr))
+                        {
+                            Address offset = ((Address)addr - (Address)zinfo->graphPrefetcherAddr) / GRAPH_PREFETCHER_ELE_SIZE;
+                            reqSatisfiedCycle = graphPrefetcher->load(offset, dispatchCycle);
+                        }
+                        else
+                        {
+                            reqSatisfiedCycle = l1d->load(addr, dispatchCycle) + L1D_LAT;
+                        }
                         cRec.record(curCycle, dispatchCycle, reqSatisfiedCycle);
                         if(zinfo->numCores == 1){
                             locality_monitor.push_address(addr,size);
@@ -412,8 +419,16 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
                     if(zinfo->numCores == 1){
                         locality_monitor.push_address(addr, size);
                     }
-
-                    uint64_t reqSatisfiedCycle = l1d->store(addr, dispatchCycle) + L1D_LAT;
+                    uint64_t reqSatisfiedCycle;
+                    if (inGraphPrefetcherAddr((void *)addr))
+                    {
+                        Address offset = ((Address)addr - (Address)zinfo->graphPrefetcherAddr) / GRAPH_PREFETCHER_ELE_SIZE;
+                        reqSatisfiedCycle = graphPrefetcher->store(offset, dispatchCycle);
+                    }
+                    else
+                    {
+                        reqSatisfiedCycle = l1d->store(addr, dispatchCycle) + L1D_LAT;
+                    }
                     cRec.record(curCycle, dispatchCycle, reqSatisfiedCycle);
 
                     // Fill the forwarding table

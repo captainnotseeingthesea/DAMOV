@@ -123,7 +123,7 @@ Core* cores[MAX_THREADS];
 GraphPrefetcherParams graphPrefetcherParams;
 GraphPrefetcherUnit graphPrefetcherUnit[MAX_THREADS];
 
-inline bool inGraphPrefetcherAddr(void * addr)
+bool inGraphPrefetcherAddr(void * addr)
 {
     void * prefetcher_addr = zinfo->graphPrefetcherAddr;
     return addr >= prefetcher_addr && addr <= (static_cast<UINT64 *>(prefetcher_addr) + zinfo->graphPrefetcherAddrRegion);
@@ -607,14 +607,14 @@ VOID InstrumentConfig(VOID * addr)
 VOID ImageLoad(IMG img, VOID *v)
 {
     // Instrument the prefetcher configure function to get the prefetcher addr
-    RTN addRtn = RTN_FindByName(img, zinfo->graphPrefetcherConfigFunc);
-    if (RTN_Valid(addRtn))
+    RTN configRtn = RTN_FindByName(img, zinfo->graphPrefetcherConfigFunc);
+    if (RTN_Valid(configRtn))
     {
-        RTN_Open(addRtn);
+        RTN_Open(configRtn);
         // 在函数入口处插入插桩例程
-        RTN_InsertCall(addRtn, IPOINT_BEFORE, (AFUNPTR)InstrumentConfig, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_END);
+        RTN_InsertCall(configRtn, IPOINT_BEFORE, (AFUNPTR)InstrumentConfig, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_END);
         
-        RTN_Close(addRtn);
+        RTN_Close(configRtn);
     }
 }
 

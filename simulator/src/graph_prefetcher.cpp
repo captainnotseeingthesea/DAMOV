@@ -27,8 +27,8 @@ void GraphPrefetcher::setParents(uint32_t _childId, const g_vector < MemObject *
     childId = _childId;
     if (parents.size() != 1)
         panic("Must have one parent");
-    if (network)
-        panic("Network not handled");
+    // if (network)
+        // panic("Network not handled");
     parent = parents[0];
 }
 
@@ -37,10 +37,10 @@ uint64_t GraphPrefetcher::access(MemReq& req)
     panic("Not implemented");
 }
 
-void GraphPrefetcher::srcAccess(uint64_t cycle, Address offset, TimingRecord &acc)
+uint64_t GraphPrefetcher::srcAccess(uint64_t cycle, Address offset, TimingRecord &acc)
 {
     assert(!srcInfo.empty());
-    uint64_t reqCycle = cycle;
+    uint64_t reqCycle = cycle, nextReqCycle = cycle;
     // record the the produced events during src accesses
     EventRecorder* evRec = zinfo->eventRecorders[srcId];
     TimingRecord srcAcc, offsetAcc0, offsetAcc1;
@@ -86,6 +86,7 @@ void GraphPrefetcher::srcAccess(uint64_t cycle, Address offset, TimingRecord &ac
     }
 
     req.lineAddr = offsetStartAddr;
+    nextReqCycle = req.cycle = ++reqCycle;
     uint64_t offsetRespCycle = parent->access(req);
 
     if((evRec && evRec->hasRecord()))
@@ -100,6 +101,7 @@ void GraphPrefetcher::srcAccess(uint64_t cycle, Address offset, TimingRecord &ac
     if(offsetStartAddr != offsetEndAddr)
     {
         req.lineAddr = offsetEndAddr;
+        nextReqCycle = req.cycle = ++reqCycle;
         offsetRespCycle = max(parent->access(req), offsetRespCycle);
         if((evRec && evRec->hasRecord()))
         {
@@ -122,12 +124,13 @@ void GraphPrefetcher::srcAccess(uint64_t cycle, Address offset, TimingRecord &ac
     }
 
     srcInfo.erase(srcInfo.begin());
+    return nextReqCycle + 1;
 }
 
-void GraphPrefetcher::destAccess(uint64_t cycle, TimingEvent* startEv)
+uint64_t GraphPrefetcher::destAccess(uint64_t cycle, TimingEvent* startEv)
 {
     assert(!destInfo.empty());
-    uint64_t respCycle, reqCycle = cycle;
+    uint64_t reqCycle = cycle, nextReqCycle;
     // record the the produced events during dest accesses
     EventRecorder* evRec = zinfo->eventRecorders[srcId];
     TimingRecord edgeAcc, weightAcc, propertyAcc;
@@ -173,7 +176,7 @@ void GraphPrefetcher::destAccess(uint64_t cycle, TimingEvent* startEv)
     }
 
     Address weightAddr = destInfo.front().weight >> lineBits;
-    req.cycle = ++reqCycle;
+    nextReqCycle = req.cycle = ++reqCycle;
     req.lineAddr = weightAddr;
     uint64_t weightRespCycle = parent->access(req);
     if(evRec)
@@ -230,6 +233,7 @@ void GraphPrefetcher::destAccess(uint64_t cycle, TimingEvent* startEv)
     destArray[endIndex] = {GRAPH_DATA_READY, edgeRespCycle, weightRespCycle, propertyRespCycle, edgeEndEv, weightEndEv, propertyEndEv};
     destInfo.erase(destInfo.begin());
     endIndex = (endIndex + 1) % nEntries;
+    return nextReqCycle + 1;
 }
 
 uint64_t GraphPrefetcher::load(Address offset, uint64_t cycle)
@@ -238,7 +242,7 @@ uint64_t GraphPrefetcher::load(Address offset, uint64_t cycle)
     respCycle = reqCycle = cycle;
     respCycle += latency;
     EventRecorder* evRec = zinfo->eventRecorders[srcId];
-    TimingRecord acc = {offset, reqCycle, reqCycle + latency, GETS, nullptr, nullptr};
+    TimingRecord acc = {offset, reqCycle, respCycle, GETS, nullptr, nullptr};
     DelayEvent* startEv; // the start event of the access
     DelayEvent* endEv; // the end event of the access
     if((evRec))
@@ -380,7 +384,7 @@ uint64_t GraphPrefetcher::load(Address offset, uint64_t cycle)
         // if the last entry has been fetched, fetch the next entry
         if(!destInfo.empty())
         {
-            destAccess(reqCycle, startEv);
+            destAccess(respCycle, startEv);
         }
         else
         {
@@ -411,11 +415,10 @@ uint64_t GraphPrefetcher::load(Address offset, uint64_t cycle)
 
 uint64_t GraphPrefetcher::store(Address offset, uint64_t cycle)
 {
-    uint64_t reqCycle = cycle, respCycle = cycle;
+    uint64_t reqCycle = cycle, respCycle = cycle + latency;
     EventRecorder* evRec = zinfo->eventRecorders[srcId];
-    TimingRecord acc = {offset, reqCycle, reqCycle + latency, PUTX, nullptr, nullptr};
+    TimingRecord acc = {offset, reqCycle, respCycle, PUTX, nullptr, nullptr};
     TimingEvent *srcEvent;
-    respCycle += latency;
     switch (offset)
     {
         case OFFSET_INDEX:
@@ -424,14 +427,15 @@ uint64_t GraphPrefetcher::store(Address offset, uint64_t cycle)
         case PROPERTY_INDEX:
             break;
         case SRC_NODE_INDEX:
-            srcAccess(reqCycle, offset, acc);
+            reqCycle += latency;
+            reqCycle = srcAccess(reqCycle, offset, acc);
             if((evRec))
             {
                 srcEvent = acc.startEvent;
             }
             while(!destInfo.empty() && destArray[endIndex].readyBits == 0)
             {
-                destAccess(reqCycle, srcEvent);
+                reqCycle = destAccess(reqCycle, srcEvent);
             }
             if((evRec))
             {

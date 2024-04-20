@@ -196,7 +196,7 @@ uint64_t CoreRecorder::cSimEnd(uint64_t curCycle) {
     assert_msg(lastEvCycle2 <= curCycle, "[%s] lec2 %ld cc %ld, state %d", name.c_str(), lastEvCycle2, curCycle, state);
     // if (unlikely(lastEvCycle1 > lastEvCycle2)) panic("[%s] Contention simulation introduced a negative skew, curCycle %ld, lc1 %ld lc2 %ld", name.c_str(), curCycle, lastEvCycle1, lastEvCycle2);
 
-    uint64_t skew = lastEvCycle2 - lastEvCycle1;
+    uint64_t skew = (lastEvCycle2 - lastEvCycle1) > 0 ? lastEvCycle2 - lastEvCycle1 : 0;
 
     // Skew clock
     // Note that by adding to gapCycles, we keep the zll clock (defined as curCycle - gapCycles) constant.

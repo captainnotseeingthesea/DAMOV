@@ -115,8 +115,8 @@ class GraphPrefetcher : public BaseCache {
         uint32_t startIndex;
         uint32_t endIndex;
 
-        void srcAccess(uint64_t cycle, Address offset, TimingRecord &acc);
-        void destAccess(uint64_t cycle, TimingEvent* startEv);
+        uint64_t srcAccess(uint64_t cycle, Address offset, TimingRecord &acc);
+        uint64_t destAccess(uint64_t cycle, TimingEvent* startEv);
 
     public:
         GraphPrefetcher(const g_string& _name, const uint32_t _nEntries, const uint32_t _latency)
