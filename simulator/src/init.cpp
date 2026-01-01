@@ -60,7 +60,11 @@
 #include "ooo_core.h"
 #include "part_repl_policies.h"
 #include "pin_cmd.h"
-#include "prefetcher.h"
+#include "prefetch/stream_prefetcher.h"
+#include "prefetch/imp_prefetcher.h"
+#include "prefetch/isb_prefetcher.h"
+#include "prefetch/stride_prefetcher.h"
+#include "prefetch/ampm_prefetcher.h"
 #include "proc_stats.h"
 #include "process_stats.h"
 #include "process_tree.h"
@@ -79,7 +83,12 @@
 #include "virt/port_virtualizer.h"
 #include "weave_md1_mem.h"
 #include "zsim.h"
-#include "graph_prefetcher.h"
+#include "prefetch/graph_prefetcher.h"
+#include "prefetch/STeMS.h"
+#include "prefetch/stream.h"
+#include "prefetch/ipcp.h"
+#include "prefetch/bop.h"
+#include "prefetch/berti.h"
 
 std::string application_path;
 extern void EndOfPhaseActions(); //in zsim.cpp
@@ -88,6 +97,44 @@ extern void EndOfPhaseActions(); //in zsim.cpp
  * all over the place and give a predictable global state to constructors. Ideally, this should just
  * follow the layout of zinfo, top-down.
  */
+
+ Prefetcher* createPrefetcher(const g_string& name, Config& config, const string& prefix, uint32_t domain) {
+    std::string prefetcherType = config.get<const char*>(prefix + "type", "None");
+
+    if (prefetcherType == "None") {
+        return nullptr;
+    } else if (prefetcherType == "stride") {
+        auto params = StridePrefetcher::buildParams(config, prefix);
+        return new StridePrefetcher(name, params);
+    } else if (prefetcherType == "isb") {
+        auto params = ISBPrefetcher::buildParams(config, prefix);
+        return new ISBPrefetcher(name, params);
+    } else if (prefetcherType == "imp") {
+        auto params = IMPPrefetcher::buildParams(config, prefix);
+        return new IMPPrefetcher(name, params);
+    } else if (prefetcherType == "ampm") {
+        auto params = AMPMPrefetcher::buildParams(config, prefix);
+        return new AMPMPrefetcher(name, params, domain);
+    } else if (prefetcherType == "STeMS") {
+        auto params = STeMS::buildParams(config, prefix);
+        return new STeMS(name, params);
+    } else if(prefetcherType == "stream") {
+        auto params = Stream::buildParams(config, prefix);
+        return new Stream(name, params);
+    } else if(prefetcherType == "ipcp"){
+        auto params = IPCP::buildParams(config, prefix);
+        return new IPCP(name, params);
+    } else if(prefetcherType == "bop"){
+        auto params = BOP::buildParams(config, prefix);
+        return new BOP(name, params);
+    } else if(prefetcherType == "berti"){
+        auto params = Berti::buildParams(config, prefix);
+        return new Berti(name, params);
+    } else {
+        panic("Invalid prefetcher type %s", prefetcherType.c_str());
+    }
+}
+
 
 BaseCache* BuildCacheBank(Config& config, const string& prefix, g_string& name, uint32_t bankSize, bool isTerminal, uint32_t domain) {
     string type = config.get<const char*>(prefix + "type", "Simple");
@@ -273,6 +320,9 @@ BaseCache* BuildCacheBank(Config& config, const string& prefix, g_string& name, 
     bool nonInclusiveHack = config.get<bool>(prefix + "nonInclusiveHack", false);
     if (nonInclusiveHack) assert(type == "Simple" && !isTerminal);
 
+    // build Prefetcher
+    Prefetcher* prefetcher = createPrefetcher(name, config, prefix + "prefetcher.", domain);
+
     // Finally, build the cache
     Cache* cache;
     CC* cc;
@@ -284,7 +334,7 @@ BaseCache* BuildCacheBank(Config& config, const string& prefix, g_string& name, 
     rp->setCC(cc);
     if (!isTerminal) {
         if (type == "Simple") {
-            cache = new Cache(numLines, cc, array, rp, accLat, invLat, bypass, name);
+            cache = new Cache(numLines, cc, array, rp, accLat, invLat, bypass, name, prefetcher);
         } else if (type == "Timing") {
             uint32_t mshrs = config.get<uint32_t>(prefix + "mshrs", 16);
             uint32_t tagLat = config.get<uint32_t>(prefix + "tagLat", 5);
@@ -301,7 +351,11 @@ BaseCache* BuildCacheBank(Config& config, const string& prefix, g_string& name, 
         //Filter cache optimization
         if (type != "Simple") panic("Terminal cache %s can only have type == Simple", name.c_str());
         if (arrayType != "SetAssoc" || hashType != "None" || replType != "LRU") panic("Invalid FilterCache config %s", name.c_str());
-        cache = new FilterCache(numSets, numLines, cc, array, rp, accLat, invLat, bypass, name);
+        cache = new FilterCache(numSets, numLines, cc, array, rp, accLat, invLat, bypass, name, prefetcher);
+    }
+    if(prefetcher != nullptr)
+    {
+        prefetcher->setCache(cache);
     }
 
 #if 0
@@ -412,23 +466,6 @@ CacheGroup* BuildCacheGroup(Config& config, const string& name, bool isTerminal)
         panic("%s: banks (%d) does not divide the size (%d bytes)", name.c_str(), banks, size);
     }
 
-    bool isPrefetcher = config.get<bool>(prefix + "isPrefetcher", false);
-    if (isPrefetcher) { //build a prefetcher group
-        uint32_t prefetchers = config.get<uint32_t>(prefix + "prefetchers", 1);
-        uint32_t entrySize = config.get<uint32_t>(prefix + "entries", 16);
-        assert(entrySize > 0);
-
-        cg.resize(prefetchers);
-        for (vector<BaseCache*>& bg : cg) bg.resize(1);
-        for (uint32_t i = 0; i < prefetchers; i++) {
-            stringstream ss;
-            ss << name << "-" << i;
-            g_string pfName(ss.str().c_str());
-            cg[i][0] = new StreamPrefetcher(pfName,bankSize/zinfo->lineSize, entrySize);
-        }
-        return cgp;
-    }
-
     // Graph prefetcher specialized for graph processing
     bool isGraphPrefetcher = config.get<bool>(prefix + "isGraphPrefetcher", false);
     zinfo->graphPrefetcherConfigFunc = gm_strdup("config_prefetcher");
@@ -436,7 +473,9 @@ CacheGroup* BuildCacheGroup(Config& config, const string& name, bool isTerminal)
     {
         uint32_t prefetchers = config.get<uint32_t>(prefix + "prefetchers", 1);
         uint32_t entrySize = config.get<uint32_t>(prefix + "entries", 32);
-        uint32_t latency = config.get<uint32_t>(prefix + "latency", 0);
+        uint32_t latency = config.get<uint32_t>(prefix + "latency", 1);
+        uint32_t nodeSize = config.get<uint32_t>(prefix + "nodeSize", 4);
+        zinfo->numRootEntries = nodeSize;
         assert(entrySize > 0);
 
         // Get the config function name of graph prefetcher
@@ -444,16 +483,47 @@ CacheGroup* BuildCacheGroup(Config& config, const string& name, bool isTerminal)
         zinfo->graphPrefetcherConfigFunc = gm_strdup(graphPrefetcherConfigFunc);
 
         // Get the addr region for graph prefetcher
-        uint32_t addrRegion = config.get<uint32_t>(prefix + "addrRegion", 16);
+        uint32_t addrRegion = config.get<uint32_t>(prefix + "addrRegion", 104);
         zinfo->graphPrefetcherAddrRegion = addrRegion;
+        // Whether to enable weight prefetch
+        bool weightEnable = config.get<bool>(prefix + "weightEnable", true);
+        bool filterEnable = config.get<bool>(prefix + "filterEnable", false);
+        string algorithmName = config.get<const char*>(prefix + "algorithm", "SSSP");
+        ALGORITHM algorithm;
+        if(algorithmName == "SSSP")
+        {
+            algorithm = ALG_SSSP;
+        }
+        else if(algorithmName == "BFS")
+        {
+            algorithm = ALG_BFS;
 
+        }
+        else if(algorithmName == "SSWP")
+        {
+            algorithm = ALG_SSWP;
+
+        }
+        else if(algorithmName == "CC")
+        {
+            algorithm = ALG_CC;
+
+        }
+        else
+        {
+            panic("Invalid algorithm configuration")
+        }
+        
+        zinfo->weightEnable = weightEnable;
+        zinfo->algorithm    = algorithm;
+        zinfo->filterEnable = filterEnable;
         cg.resize(prefetchers);
         for (vector<BaseCache*>& bg : cg) bg.resize(1);
         for (uint32_t i = 0; i < prefetchers; i++) {
             stringstream ss;
             ss << name << "-" << i;
             g_string pfName(ss.str().c_str());
-            cg[i][0] = new GraphPrefetcher(pfName, entrySize, latency);
+            cg[i][0] = new GraphPrefetcher(pfName, entrySize, nodeSize, latency);
         }
         return cgp;
     }
@@ -931,6 +1001,10 @@ static void InitGlobalStats() {
     ProxyStat* phaseStat = new ProxyStat();
     phaseStat->init("phase", "Simulated phases", &zinfo->numPhases);
     zinfo->rootStat->append(phaseStat);
+
+    ProxyStat* graphStat = new ProxyStat();
+    graphStat->init("VertexNum", "Total affected vertex num", &zinfo->affected_vertex_num);
+    zinfo->rootStat->append(graphStat);
 }
 
 

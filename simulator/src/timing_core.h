@@ -41,7 +41,6 @@ class TimingCore : public Core {
     private:
         FilterCache* l1i;
         FilterCache* l1d;
-        GraphPrefetcher *graphPrefetcher;
 
         uint64_t instrs;
 
@@ -55,6 +54,7 @@ class TimingCore : public Core {
 
     public:
         TimingCore(FilterCache* _l1i, FilterCache* _l1d, GraphPrefetcher* _graphPrefetcher, uint32_t domain, g_string& _name);
+
         void offloadFunction_begin() {
              offload_region = true;
 	}
@@ -89,13 +89,12 @@ class TimingCore : public Core {
 
         void finish();
     private:
-        inline void loadAndRecord(Address addr, uint32_t size);
-        inline void storeAndRecord(Address addr, uint32_t size);
+        inline void loadAndRecord(Address addr, uint32_t size, Address pc);
+        inline void storeAndRecord(Address addr, uint32_t size, Address pc);
         inline void bblAndRecord(Address bblAddr, BblInfo* bblInstrs);
-        inline void record(uint64_t startCycle);
 
-        inline void prefetcherLoadSrc(SrcInfo src) {graphPrefetcher->pushSrcInfo(src);}
-        inline void prefetcherLoadDest(DestInfo dest) {graphPrefetcher->pushDestInfo(dest);}
+        inline void prefetcherLoadSrc(SrcInfo src) {}
+        inline void prefetcherLoadDest(DestInfo dest) {}
 
         static void OffloadBegin(THREADID tid);
         static void OffloadEnd(THREADID tid);
@@ -103,11 +102,11 @@ class TimingCore : public Core {
         static void PrefetcherLoadSrcFunc(THREADID tid, SrcInfo src);
         static void PrefetcherLoadDestFunc(THREADID tid, DestInfo dest);
 
-        static void LoadAndRecordFunc(THREADID tid, ADDRINT addr, UINT32 size);
-        static void StoreAndRecordFunc(THREADID tid, ADDRINT addr, UINT32 size);
+        static void LoadAndRecordFunc(THREADID tid, ADDRINT addr, UINT32 size, ADDRINT pc);
+        static void StoreAndRecordFunc(THREADID tid, ADDRINT addr, UINT32 size, ADDRINT pc);
         static void BblAndRecordFunc(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo);
-        static void PredLoadAndRecordFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size);
-        static void PredStoreAndRecordFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size);
+        static void PredLoadAndRecordFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size, ADDRINT pc);
+        static void PredStoreAndRecordFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size, ADDRINT pc);
 
         static void BranchFunc(THREADID, ADDRINT, BOOL, ADDRINT, ADDRINT) {}
 } ATTR_LINE_ALIGNED;

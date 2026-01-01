@@ -290,23 +290,32 @@ class WindowStructure {
         }
 };
 
+enum ROBEntryType {LOAD, STORE, GRAPHLOAD, GRAPHSTORE, STOREADDR, OTHER, NONE};
+struct ROBEntry
+{
+    uint64_t cycle;
+    ROBEntryType type;
+};
+
 template<uint32_t SZ, uint32_t W>
 class ReorderBuffer {
+public:
+    
     private:
-        uint64_t buf[SZ];
+        ROBEntry buf[SZ];
         uint64_t curRetireCycle;
         uint32_t curCycleRetires;
         uint32_t idx;
 
     public:
         ReorderBuffer() {
-            for (uint32_t i = 0; i < SZ; i++) buf[i] = 0;
+            for (uint32_t i = 0; i < SZ; i++) buf[i] = {0, NONE};
             idx = 0;
             curRetireCycle = 0;
             curCycleRetires = 1;
         }
 
-        inline uint64_t minAllocCycle() {
+        inline ROBEntry minAllocCycle() {
             return buf[idx];
         }
 
@@ -329,7 +338,30 @@ class ReorderBuffer {
                 curCycleRetires = 1;
             }
 
-            buf[idx++] = curRetireCycle;
+            buf[idx++] = {curRetireCycle, NONE};
+            if (idx == SZ) idx = 0;
+        }
+
+        inline void markRetire(uint64_t minRetireCycle, ROBEntryType type) {
+            if (minRetireCycle <= curRetireCycle) {  // retire with bundle
+                if (curCycleRetires == W) {
+                    curRetireCycle++;
+                    curCycleRetires = 0;
+                } else {
+                    curCycleRetires++;
+                }
+
+                /* No branches version (careful, width should be power of 2...)
+                 * curRetireCycle += curCycleRetires/W;
+                 * curCycleRetires = (curCycleRetires + 1) % W;
+                 *  NOTE: After profiling, version with branch seems faster
+                 */
+            } else {  // advance
+                curRetireCycle = minRetireCycle;
+                curCycleRetires = 1;
+            }
+
+            buf[idx++] = {curRetireCycle, type};
             if (idx == SZ) idx = 0;
         }
 };
@@ -368,7 +400,6 @@ class OOOCore : public Core {
 
         FilterCache* l1i;
         FilterCache* l1d;
-        GraphPrefetcher *graphPrefetcher;
 
         uint64_t phaseEndCycle; //next stopping point
 
@@ -378,13 +409,18 @@ class OOOCore : public Core {
         BblInfo* prevBbl;
 
         //Record load and store addresses
-        Address loadAddrs[256];
-        Address storeAddrs[256];
-        uint32_t loadSizes[256];
-        uint32_t storeSizes[256];
+        AccessInfo accesses[256];
 
         uint32_t loads;
         uint32_t stores;
+
+        // graph data monitor
+        uint64_t offsetLoad;
+        uint64_t edgeLoad;
+        uint64_t weightLoad;
+        uint64_t propertyLoad;
+        uint64_t propertyStore;
+        uint64_t graphDataLoadLatency;
 
         locality locality_monitor;
         Counter spatial_l;
@@ -392,6 +428,11 @@ class OOOCore : public Core {
 
         uint64_t lastStoreCommitCycle;
         uint64_t lastStoreAddrCommitCycle; //tracks last store addr uop, all loads queue behind it
+
+        uint64_t lastLoadStallCycle;
+        uint64_t lastStoreStallCycle;
+        uint64_t lastGraphLoadStalCycle;
+        uint64_t lastStallCycle;
 
         void finish();
         //LSU queues are modeled like the ROB. Surprising? Entries are grabbed in dataflow order,
@@ -429,7 +470,9 @@ class OOOCore : public Core {
         CycleQueue<28> uopQueue;  // models issue queue
 
         uint64_t instrs, branchUops, fpAddSubUops, fpMulDivUops, uops, bbls, approxInstrs, mispredBranches, predBranches;
-	uint64_t mispredInstrs, mispredPenalty, opExecuted, loadStallsTotal, storeStallsTotal; // top-down
+	    uint64_t mispredInstrs, mispredPenalty, opExecuted, loadStallsTotal, storeStallsTotal; // top-down
+        uint64_t graphLoadStallsTotal, allSallsTotal;
+        uint64_t totalLoadLatency, totalStoreLatency, totalLoad, totalStore, averageLoadLatency, averageStoreLatency;
 #ifdef OOO_STALL_STATS
         Counter profFetchStalls, profDecodeStalls, profIssueStalls;
 #endif
@@ -476,8 +519,8 @@ class OOOCore : public Core {
         void cSimStart();
         void cSimEnd();
     private:
-        inline void load(Address addr, uint32_t size);
-        inline void store(Address addr, uint32_t size);
+        inline void load(Address addr, uint32_t size, Address pc);
+        inline void store(Address addr, uint32_t size, Address pc);
 
         inline void prefetcherLoadSrc(SrcInfo src) {graphPrefetcher->pushSrcInfo(src);}
         inline void prefetcherLoadDest(DestInfo dest) {graphPrefetcher->pushDestInfo(dest);}
@@ -506,10 +549,10 @@ class OOOCore : public Core {
         static void PrefetcherLoadSrcFunc(THREADID tid, SrcInfo src);
         static void PrefetcherLoadDestFunc(THREADID tid, DestInfo dest);
 
-        static void LoadFunc(THREADID tid, ADDRINT addr, UINT32 size);
-        static void StoreFunc(THREADID tid, ADDRINT addr, UINT32 size);
-        static void PredLoadFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size);
-        static void PredStoreFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size);
+        static void LoadFunc(THREADID tid, ADDRINT addr, UINT32 size, ADDRINT pc);
+        static void StoreFunc(THREADID tid, ADDRINT addr, UINT32 size, ADDRINT pc);
+        static void PredLoadFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size, ADDRINT pc);
+        static void PredStoreFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size, ADDRINT pc);
         static void BblFunc(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo);
         static void BranchFunc(THREADID tid, ADDRINT pc, BOOL taken, ADDRINT takenNpc, ADDRINT notTakenNpc);
 } ATTR_LINE_ALIGNED;  // Take up an int number of cache lines

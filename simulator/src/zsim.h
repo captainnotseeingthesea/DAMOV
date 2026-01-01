@@ -35,6 +35,7 @@
 #include <string>
 #include "pad.h"
 #include <fstream>
+#include "prefetch/graph_prefetcher.h"
 
 class Core;
 class Scheduler;
@@ -75,12 +76,39 @@ enum ProcExitStatus {
     PROC_RESTARTME  = 2
 };
 
+struct GraphRegion
+{
+    uint32_t vertex_num;
+    void * offsetStart;
+    void * offsetEnd;
+    void * edgeStart;
+    void * edgeEnd;
+    void * weightStart;
+    void * weightEnd;
+    void * propertyStart;
+    void * propertyEnd;
+
+    GraphRegion(GraphRegion &other)
+    {
+        vertex_num = other.vertex_num;
+        offsetStart = other.offsetStart;
+        offsetEnd = other.offsetEnd;
+        edgeStart = other.edgeStart;
+        edgeEnd = other.edgeEnd;
+        weightStart = other.weightStart;
+        weightEnd = other.weightEnd;
+        propertyStart = other.propertyStart;
+        propertyEnd = other.propertyEnd;
+    }
+};
+
+
 struct GlobSimInfo {
     //System configuration values, all read-only, set at initialization
     uint32_t numCores;
     uint32_t lineSize;
-
-
+    uint32_t numRootEntries; // graph prefetcher root vertices entry num
+    
     //Cores
     Core** cores;
 
@@ -201,6 +229,15 @@ struct GlobSimInfo {
     const char * graphPrefetcherConfigFunc; // function name
     void * graphPrefetcherAddr = 0; // start addr
     uint32_t graphPrefetcherAddrRegion = 0; // addr region
+    bool weightEnable; // whether to prefetch weight value
+    bool filterEnable; // whether to enable filter useless operation at graph prefetcher
+    uint32_t algorithm; // used to perform corresponding algorithm operation
+
+    // Graph data address region
+    bool configGraph = false;
+    GraphRegion graphRegion;
+    g_vector<bool> affected_vertex;
+    uint64_t affected_vertex_num = 0;
 };
 
 
@@ -218,6 +255,7 @@ uint32_t TakeBarrier(uint32_t tid, uint32_t cid);
 void SimEnd(); //only call point out of zsim.cpp should be watchdog threads
 
 bool inGraphPrefetcherAddr(void* addr);
+bool isGraphLoad(uint64_t* addr); 
 
 //std::ofstream dram_requests_phases;
 #endif  // ZSIM_H_

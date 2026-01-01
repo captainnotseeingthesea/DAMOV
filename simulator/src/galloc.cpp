@@ -147,7 +147,8 @@ void* __gm_memalign(size_t blocksize, size_t bytes) {
     futex_lock(&GM->lock);
     void* ptr = mspace_memalign(GM->mspace_ptr, blocksize, bytes);
     futex_unlock(&GM->lock);
-    if (!ptr) panic("gm_memalign(): Out of global heap memory, use a larger GM segment");
+    if (!ptr) 
+        panic("gm_memalign(): Out of global heap memory, use a larger GM segment");
     return ptr;
 }
 

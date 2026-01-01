@@ -26,136 +26,162 @@
 #include "simple_core.h"
 #include "filter_cache.h"
 #include "zsim.h"
-#include "graph_prefetcher.h"
 
+class GraphPrefetcher;
 
-SimpleCore::SimpleCore(FilterCache* _l1i, FilterCache* _l1d, GraphPrefetcher* _graphPrefetcher, g_string& _name)
-             : Core(_name), l1i(_l1i), l1d(_l1d), graphPrefetcher(_graphPrefetcher), instrs(0), curCycle(0), haltedCycles(0) {}
+SimpleCore::SimpleCore(FilterCache *_l1i, FilterCache *_l1d, GraphPrefetcher *_graphPrefetcher, g_string &_name)
+    : Core(_name, _graphPrefetcher), l1i(_l1i), l1d(_l1d), instrs(0), curCycle(0), haltedCycles(0){}
 
-void SimpleCore::initStats(AggregateStat* parentStat) {
-    AggregateStat* coreStat = new AggregateStat();
+void SimpleCore::initStats(AggregateStat *parentStat)
+{
+    AggregateStat *coreStat = new AggregateStat();
     coreStat->init(name.c_str(), "Core stats");
-    auto x = [this]() -> uint64_t { assert(curCycle >= haltedCycles); return curCycle - haltedCycles; };
+    auto x = [this]() -> uint64_t
+    { assert(curCycle >= haltedCycles); return curCycle - haltedCycles; };
     auto cyclesStat = makeLambdaStat(x);
     cyclesStat->init("cycles", "Simulated cycles");
-    ProxyStat* instrsStat = new ProxyStat();
+    ProxyStat *instrsStat = new ProxyStat();
     instrsStat->init("instrs", "Simulated instructions", &instrs);
     coreStat->append(cyclesStat);
     coreStat->append(instrsStat);
     parentStat->append(coreStat);
 }
 
-uint64_t SimpleCore::getPhaseCycles() const {
+uint64_t SimpleCore::getPhaseCycles() const
+{
     return curCycle % zinfo->phaseLength;
 }
 
-void SimpleCore::OffloadBegin(THREADID tid) {
-    static_cast<SimpleCore*>(cores[tid])->offloadFunction_begin();
+void SimpleCore::OffloadBegin(THREADID tid)
+{
+    static_cast<SimpleCore *>(cores[tid])->offloadFunction_begin();
 }
-void SimpleCore::OffloadEnd(THREADID tid) {
-    static_cast<SimpleCore*>(cores[tid])->offloadFunction_end();
+void SimpleCore::OffloadEnd(THREADID tid)
+{
+    static_cast<SimpleCore *>(cores[tid])->offloadFunction_end();
 }
 
 void SimpleCore::PrefetcherLoadSrcFunc(THREADID tid, SrcInfo src)
 {
-    static_cast<SimpleCore*>(cores[tid])->prefetcherLoadSrc(src);
+    static_cast<SimpleCore *>(cores[tid])->prefetcherLoadSrc(src);
 }
 
 void SimpleCore::PrefetcherLoadDestFunc(THREADID tid, DestInfo dest)
 {
-    static_cast<SimpleCore*>(cores[tid])->prefetcherLoadDest(dest);
+    static_cast<SimpleCore *>(cores[tid])->prefetcherLoadDest(dest);
 }
 
-void SimpleCore::load(Address addr, uint32_t size) {
-    if(inGraphPrefetcherAddr((void *)addr))
+void SimpleCore::load(Address addr, uint32_t size, Address pc)
+{
+    if (graphPrefetcherEnabled && inGraphPrefetcherAddr((void *)addr))
     {
         Address offset = ((Address)addr - (Address)zinfo->graphPrefetcherAddr) / GRAPH_PREFETCHER_ELE_SIZE;
         curCycle = graphPrefetcher->load(offset, curCycle);
     }
     else
     {
-        curCycle = l1d->load(addr, curCycle);
+        AccessInfo info = {addr, pc, size, AccessInfo::DATA, AccessInfo::LOAD};
+        curCycle = l1d->load(info, curCycle);
     }
 }
 
-void SimpleCore::store(Address addr, uint32_t size) {
-    if(inGraphPrefetcherAddr((void *)addr))
+void SimpleCore::store(Address addr, uint32_t size, Address pc)
+{
+    if (graphPrefetcherEnabled && inGraphPrefetcherAddr((void *)addr))
     {
         Address offset = ((Address)addr - (Address)zinfo->graphPrefetcherAddr) / GRAPH_PREFETCHER_ELE_SIZE;
         curCycle = graphPrefetcher->store(offset, curCycle);
     }
     else
     {
-        curCycle = l1d->store(addr, curCycle);
+        AccessInfo info = {addr, pc, size, AccessInfo::DATA, AccessInfo::STORE};
+        curCycle = l1d->store(info, curCycle);
     }
 }
 
-void SimpleCore::bbl(Address bblAddr, BblInfo* bblInfo) {
-  instrs += bblInfo->instrs;
-	if(offload_region){
-    offload_instrs += bblInfo->instrs;
-  }
+void SimpleCore::bbl(Address bblAddr, BblInfo *bblInfo)
+{
+    instrs += bblInfo->instrs;
+    if (offload_region)
+    {
+        offload_instrs += bblInfo->instrs;
+    }
 
-  curCycle += bblInfo->instrs;
-  Address endBblAddr = bblAddr + bblInfo->bytes;
-  for (Address fetchAddr = bblAddr; fetchAddr < endBblAddr; fetchAddr+=(1 << lineBits)) {
-    curCycle = l1i->load(fetchAddr, curCycle);
-  }
+    curCycle += bblInfo->instrs;
+    Address endBblAddr = bblAddr + bblInfo->bytes;
+    for (Address fetchAddr = bblAddr; fetchAddr < endBblAddr; fetchAddr += (1 << lineBits))
+    {
+        AccessInfo info = {fetchAddr, 0, 1 << lineBits, AccessInfo::INS, AccessInfo::LOAD};
+        curCycle = l1i->load(info, curCycle);
+    }
 }
 
-void SimpleCore::contextSwitch(int32_t gid) {
-    if (gid == -1) {
+void SimpleCore::contextSwitch(int32_t gid)
+{
+    if (gid == -1)
+    {
         l1i->contextSwitch();
         l1d->contextSwitch();
     }
 }
 
-void SimpleCore::join() {
-    //info("[%s] Joining, curCycle %ld phaseEnd %ld haltedCycles %ld", name.c_str(), curCycle, phaseEndCycle, haltedCycles);
-    if (curCycle < zinfo->globPhaseCycles) { //carry up to the beginning of the phase
+void SimpleCore::join()
+{
+    // info("[%s] Joining, curCycle %ld phaseEnd %ld haltedCycles %ld", name.c_str(), curCycle, phaseEndCycle, haltedCycles);
+    if (curCycle < zinfo->globPhaseCycles)
+    { // carry up to the beginning of the phase
         haltedCycles += (zinfo->globPhaseCycles - curCycle);
         curCycle = zinfo->globPhaseCycles;
     }
     phaseEndCycle = zinfo->globPhaseCycles + zinfo->phaseLength;
-    //note that with long events, curCycle can be arbitrarily larger than phaseEndCycle; however, it must be aligned in current phase
-    //info("[%s] Joined, curCycle %ld phaseEnd %ld haltedCycles %ld", name.c_str(), curCycle, phaseEndCycle, haltedCycles);
+    // note that with long events, curCycle can be arbitrarily larger than phaseEndCycle; however, it must be aligned in current phase
+    // info("[%s] Joined, curCycle %ld phaseEnd %ld haltedCycles %ld", name.c_str(), curCycle, phaseEndCycle, haltedCycles);
 }
 
-
-//Static class functions: Function pointers and trampolines
-InstrFuncPtrs SimpleCore::GetFuncPtrs() {
+// Static class functions: Function pointers and trampolines
+InstrFuncPtrs SimpleCore::GetFuncPtrs()
+{
     return {LoadFunc, StoreFunc, BblFunc, BranchFunc, PredLoadFunc, PredStoreFunc, OffloadBegin, OffloadEnd, PrefetcherLoadSrcFunc, PrefetcherLoadDestFunc, FPTR_ANALYSIS, {0}};
 }
 
-void SimpleCore::LoadFunc(THREADID tid, ADDRINT addr, UINT32 size) {
-    static_cast<SimpleCore*>(cores[tid])->load(addr, size);
+void SimpleCore::LoadFunc(THREADID tid, ADDRINT addr, UINT32 size, ADDRINT pc)
+{
+    static_cast<SimpleCore *>(cores[tid])->load(addr, size, pc);
 }
 
-void SimpleCore::StoreFunc(THREADID tid, ADDRINT addr, UINT32 size) {
-    static_cast<SimpleCore*>(cores[tid])->store(addr, size);
+void SimpleCore::StoreFunc(THREADID tid, ADDRINT addr, UINT32 size, ADDRINT pc)
+{
+    static_cast<SimpleCore *>(cores[tid])->store(addr, size, pc);
 }
 
-void SimpleCore::PredLoadFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size) {
-    if (pred) static_cast<SimpleCore*>(cores[tid])->load(addr, size);
+void SimpleCore::PredLoadFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size, ADDRINT pc)
+{
+    if (pred)
+        static_cast<SimpleCore *>(cores[tid])->load(addr, size, pc);
 }
 
-void SimpleCore::PredStoreFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size) {
-    if (pred) static_cast<SimpleCore*>(cores[tid])->store(addr, size);
+void SimpleCore::PredStoreFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size, ADDRINT pc)
+{
+    if (pred)
+        static_cast<SimpleCore *>(cores[tid])->store(addr, size, pc);
 }
 
-void SimpleCore::BblFunc(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {
-    SimpleCore* core = static_cast<SimpleCore*>(cores[tid]);
+void SimpleCore::BblFunc(THREADID tid, ADDRINT bblAddr, BblInfo *bblInfo)
+{
+    SimpleCore *core = static_cast<SimpleCore *>(cores[tid]);
     core->bbl(bblAddr, bblInfo);
 
-    while (core->curCycle > core->phaseEndCycle) {
+    while (core->curCycle > core->phaseEndCycle)
+    {
         assert(core->phaseEndCycle == zinfo->globPhaseCycles + zinfo->phaseLength);
         core->phaseEndCycle += zinfo->phaseLength;
 
         uint32_t cid = getCid(tid);
-        //NOTE: TakeBarrier may take ownership of the core, and so it will be used by some other thread. If TakeBarrier context-switches us,
-        //the *only* safe option is to return inmmediately after we detect this, or we can race and corrupt core state. If newCid == cid,
-        //we're not at risk of racing, even if we were switched out and then switched in.
+        // NOTE: TakeBarrier may take ownership of the core, and so it will be used by some other thread. If TakeBarrier context-switches us,
+        // the *only* safe option is to return inmmediately after we detect this, or we can race and corrupt core state. If newCid == cid,
+        // we're not at risk of racing, even if we were switched out and then switched in.
         uint32_t newCid = TakeBarrier(tid, cid);
-        if (newCid != cid) break; /*context-switch*/
+        if (newCid != cid)
+            break; /*context-switch*/
     }
 }

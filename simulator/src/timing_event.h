@@ -167,6 +167,16 @@ class TimingEvent {
             //assert_msg(state == EV_DONE || state == EV_QUEUED || state == EV_HELD, "post-sim state %d (%s)", state, typeid(*this).name());
         }
 
+        void releaseEvent() {
+            // First release all children recursively
+            auto releaseChild = [](TimingEvent** childPtr) {
+                (*childPtr)->releaseEvent();
+            };
+            visitChildren<decltype(releaseChild)>(releaseChild);
+
+            freeEvent();
+        }
+
         // Used when an external, event-driven object takes control of the object --- it becomes queued, but externally
         inline void hold() {
             assert_msg(state == EV_RUNNING, "called hold() with state %d", state);

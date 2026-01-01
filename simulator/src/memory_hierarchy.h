@@ -37,6 +37,7 @@
 
 /* Addresses are plain 64-bit uints. This should be kept compatible with PIN addrints */
 typedef uint64_t Address;
+const Address MaxAddr = (Address)-1;
 
 /* Types of Access. An Access is a request that proceeds from lower to upper
  * levels of the hierarchy (core->l1->l2, etc.)
@@ -74,9 +75,29 @@ inline bool IsGet(AccessType t) { return t == GETS || t == GETX; }
 inline bool IsPut(AccessType t) { return t == PUTS || t == PUTX; }
 
 
+
+
+struct AccessInfo
+{
+    enum DataType {OFFSET, EDGE, WEIGHT, PROPERTY, DATA, INS, NONE};
+    enum AccessType {LOAD, STORE, OTHER};
+
+    Address addr;
+    Address pc;
+    uint32_t size;
+    DataType dataType;
+    AccessType accessType;
+
+    inline bool isGraphData()
+    {
+        return dataType <= PROPERTY;
+    }
+};
+
 /* Memory request */
 struct MemReq {
     Address lineAddr;
+    AccessInfo accessInfo;
     AccessType type;
     uint32_t childId;
     MESIState* state;

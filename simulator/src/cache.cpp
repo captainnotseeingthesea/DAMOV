@@ -31,7 +31,13 @@
 #include "zsim.h"
 
 Cache::Cache(uint32_t _numLines, CC* _cc, CacheArray* _array, ReplPolicy* _rp, uint32_t _accLat, uint32_t _invLat, bool _bypass, const g_string& _name)
-    : cc(_cc), array(_array), rp(_rp), numLines(_numLines), accLat(_accLat), invLat(_invLat), name(_name), bypass(_bypass) {}
+    : cc(_cc), array(_array), rp(_rp), numLines(_numLines), accLat(_accLat), invLat(_invLat), name(_name), bypass(_bypass), prefetcher(nullptr) {
+    }
+
+Cache::Cache(uint32_t _numLines, CC* _cc, CacheArray* _array, ReplPolicy* _rp, uint32_t _accLat, uint32_t _invLat, bool _bypass, const g_string& _name, Prefetcher* _prefetcher)
+        : Cache(_numLines, _cc, _array, _rp, _accLat, _invLat, _bypass, _name) {
+        prefetcher = _prefetcher;
+    }
 
 const char* Cache::getName() {
     return name.c_str();
@@ -58,8 +64,46 @@ void Cache::initCacheStats(AggregateStat* cacheStat) {
     rp->initStats(cacheStat);
 }
 
+bool Cache::inCache(Address lineAddr)
+{
+    // Check if the line is in the cache
+    int32_t lineId = array->lookup(lineAddr, nullptr, false);
+    return (lineId != -1);
+}
+
+bool Cache::hasBeenPrefetched(Address addr)
+{
+    int32_t lineId = array->lookup(addr, nullptr, false);
+    if(lineId != -1)
+    {
+        return cc->isPrefetched(lineId);
+    }
+    else
+    {
+        return false;
+    }
+}
+
+bool Cache::hasEverBeenPrefetched(Address addr)
+{
+    int32_t lineId = array->lookup(addr, nullptr, false);
+    if(lineId != -1)
+    {
+        return cc->isEverPrefetched(lineId);
+    }
+    else
+    {
+        return false;
+    }
+}
+
 uint64_t Cache::access(MemReq& req) {
     uint64_t respCycle = req.cycle;
+    g_vector<AddrPriority> addresses;
+    TimingRecord tr;
+    EventRecorder* evRec;
+    tr.clear();
+
     bool skipAccess = cc->startAccess(req); //may need to skip access due to races (NOTE: may change req.type!)
     if (likely(!skipAccess)) {
         bool updateReplacement = (req.type == GETS) || (req.type == GETX);
@@ -77,17 +121,31 @@ uint64_t Cache::access(MemReq& req) {
             cc->processEviction(req, wbLineAddr, lineId, respCycle); //1. if needed, send invalidates/downgrades to lower level
 
             array->postinsert(req.lineAddr, &req, lineId); //do the actual insertion. NOTE: Now we must split insert into a 2-phase thing because cc unlocks us.
+
         }
         // Enforce single-record invariant: Writeback access may have a timing
         // record. If so, read it.
-        EventRecorder* evRec = zinfo->eventRecorders[req.srcId];
+        evRec = zinfo->eventRecorders[req.srcId];
         TimingRecord wbAcc;
         wbAcc.clear();
         if (unlikely(evRec && evRec->hasRecord())) {
             wbAcc = evRec->popRecord();
         }
-
-        respCycle = cc->processAccess(req, lineId, respCycle);
+        
+        uint64_t getDoneCycle = respCycle;
+        respCycle = cc->processAccess(req, lineId, respCycle, &getDoneCycle);
+        
+        bool miss = (getDoneCycle - req.cycle) != accLat;
+        bool isPrefetch = req.flags & MemReq::PREFETCH;
+        
+        if(!isPrefetch)
+        {
+            if(prefetcher && prefetcher->observeAccess(req.lineAddr, req.flags, req.type, miss))
+            {
+                PrefetchInfo pfi(req, miss);
+                prefetcher->calculatePrefetch(pfi, respCycle, addresses);
+            }
+        }
 
         // Access may have generated another timing record. If *both* access
         // and wb have records, stitch them together
@@ -95,7 +153,8 @@ uint64_t Cache::access(MemReq& req) {
             if (!evRec->hasRecord()) {
                 // Downstream should not care about endEvent for PUTs
                 wbAcc.endEvent = nullptr;
-                evRec->pushRecord(wbAcc);
+                tr = wbAcc;
+                // evRec->pushRecord(wbAcc);
             } else {
                 // Connect both events
                 TimingRecord acc = evRec->popRecord();
@@ -113,15 +172,43 @@ uint64_t Cache::access(MemReq& req) {
                 acc.reqCycle = req.cycle;
                 acc.startEvent = startEv;
                 // endEvent / endCycle stay the same; wbAcc's endEvent not connected
-                evRec->pushRecord(acc);
+                tr = acc;
+                // evRec->pushRecord(acc);
             }
         }
     }
 
     cc->endAccess(req);
-
     assert_msg(respCycle >= req.cycle, "[%s] resp < req? 0x%lx type %s childState %s, respCycle %ld reqCycle %ld",
             name.c_str(), req.lineAddr, AccessTypeName(req.type), MESIStateName(*req.state), respCycle, req.cycle);
+            
+    // put the prefetches outside the lock to avoid deadlock
+    uint64_t reqCycle = req.cycle + accLat;
+    for(AddrPriority& addr_prio : addresses)
+    {
+        Address vAddr = (addr_prio.first) & ~((1 << lineBits) - 1);
+        Address vLineAddr = addr_prio.first >> lineBits;
+        Address pLineAddr = procMask | vLineAddr;
+        MESIState dummyState = MESIState::I;
+        AccessInfo accessInfo = req.accessInfo;
+        accessInfo.addr = vAddr;
+        MemReq prefetch = {pLineAddr, accessInfo, GETS, 0, &dummyState, reqCycle++, req.childLock, dummyState, req.srcId, req.flags| MemReq::PREFETCH};
+        uint64_t pfRespCycle = access(prefetch);
+        prefetcher->notifyFill(prefetch, pfRespCycle);
+        TimingRecord prefetchTr;
+        // connect both records
+        if (unlikely(evRec && evRec->hasRecord())) {
+            prefetchTr = evRec->popRecord();
+            if(tr.isValid())
+            {
+                tr.startEvent->addChild(prefetchTr.startEvent, evRec);
+            }
+        }
+    }
+    if(tr.isValid() && evRec)
+    {
+        evRec->pushRecord(tr);
+    }
     return respCycle;
 }
 

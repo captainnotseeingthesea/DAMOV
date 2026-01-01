@@ -1,0 +1,13 @@
+# src/prefetch/SConscript
+
+Import('env')
+import os
+
+# 递归收集 prefetch 下所有 .cpp 文件（包括 base/ 和 replacement_policies/ 等子目录）
+sources = []
+for root, dirs, files in os.walk('.'):
+    for file in files:
+        if file.endswith('.cpp'):
+            sources.append(os.path.join(root, file))
+
+Return('sources')

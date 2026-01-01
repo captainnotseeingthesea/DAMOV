@@ -31,7 +31,7 @@
 //#define DEBUG_MSG(args...) info(args)
 
 AcceleratorCore::AcceleratorCore(FilterCache* _l1i, FilterCache* _l1d, GraphPrefetcher* _graphPrefetcher, uint32_t _domain, g_string& _name)
-    : Core(_name), l1i(_l1i), l1d(_l1d), graphPrefetcher(_graphPrefetcher), instrs(0), curCycle(0), cRec(_domain, _name) {}
+    : Core(_name, _graphPrefetcher), l1i(_l1i), l1d(_l1d), instrs(0), curCycle(0), cRec(_domain, _name) {}
 
 uint64_t AcceleratorCore::getPhaseCycles() const {
     return curCycle % zinfo->phaseLength;
@@ -77,18 +77,20 @@ void AcceleratorCore::leave() {
     cRec.notifyLeave(curCycle);
 }
 
-void AcceleratorCore::loadAndRecord(Address addr, uint32_t size) {
+void AcceleratorCore::loadAndRecord(Address addr, uint32_t size, Address pc) {
     uint64_t startCycle = curCycle;
-    curCycle = l1d->load(addr, curCycle);
+    AccessInfo info = {addr, pc, size, AccessInfo::DATA, AccessInfo::LOAD};
+    curCycle = l1d->load(info, curCycle);
     cRec.record(startCycle);
 }
 
 void AcceleratorCore::finish(){
     return;
 }
-void AcceleratorCore::storeAndRecord(Address addr, uint32_t size) {
+void AcceleratorCore::storeAndRecord(Address addr, uint32_t size, Address pc) {
     uint64_t startCycle = curCycle;
-    curCycle = l1d->store(addr, curCycle);
+    AccessInfo info = {addr, pc, size, AccessInfo::DATA, AccessInfo::STORE};
+    curCycle = l1d->store(info, curCycle);
     cRec.record(startCycle);
 }
 
@@ -102,11 +104,11 @@ void AcceleratorCore::bblAndRecord(Address bblAddr, BblInfo* bblInfo) {
         offload_instrs += bblInfo->instrs;
     }
 
-
     Address endBblAddr = bblAddr + bblInfo->bytes;
     for (Address fetchAddr = bblAddr; fetchAddr < endBblAddr; fetchAddr+=(1 << lineBits)) {
         uint64_t startCycle = curCycle;
-        curCycle = l1i->load(fetchAddr, curCycle);
+        AccessInfo info = {fetchAddr, 0, 1 << lineBits, AccessInfo::INS, AccessInfo::LOAD};
+        curCycle = l1i->load(info, curCycle);
         cRec.record(startCycle);
     }
 }
@@ -130,12 +132,12 @@ void AcceleratorCore::PrefetcherLoadDestFunc(THREADID tid, DestInfo dest) {
     static_cast<AcceleratorCore*>(cores[tid])->prefetcherLoadDest(dest);
 }
 
-void AcceleratorCore::LoadAndRecordFunc(THREADID tid, ADDRINT addr, UINT32 size) {
-    static_cast<AcceleratorCore*>(cores[tid])->loadAndRecord(addr, size);
+void AcceleratorCore::LoadAndRecordFunc(THREADID tid, ADDRINT addr, UINT32 size, Address pc) {
+    static_cast<AcceleratorCore*>(cores[tid])->loadAndRecord(addr, size, pc);
 }
 
-void AcceleratorCore::StoreAndRecordFunc(THREADID tid, ADDRINT addr, UINT32 size) {
-    static_cast<AcceleratorCore*>(cores[tid])->storeAndRecord(addr, size);
+void AcceleratorCore::StoreAndRecordFunc(THREADID tid, ADDRINT addr, UINT32 size, Address pc) {
+    static_cast<AcceleratorCore*>(cores[tid])->storeAndRecord(addr, size, pc);
 }
 
 void AcceleratorCore::BblAndRecordFunc(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {
@@ -150,10 +152,10 @@ void AcceleratorCore::BblAndRecordFunc(THREADID tid, ADDRINT bblAddr, BblInfo* b
     }
 }
 
-void AcceleratorCore::PredLoadAndRecordFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size) {
-    if (pred) static_cast<AcceleratorCore*>(cores[tid])->loadAndRecord(addr, size);
+void AcceleratorCore::PredLoadAndRecordFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size, Address pc) {
+    if (pred) static_cast<AcceleratorCore*>(cores[tid])->loadAndRecord(addr, size, pc);
 }
 
-void AcceleratorCore::PredStoreAndRecordFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size) {
-    if (pred) static_cast<AcceleratorCore*>(cores[tid])->storeAndRecord(addr, size);
+void AcceleratorCore::PredStoreAndRecordFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size, Address pc) {
+    if (pred) static_cast<AcceleratorCore*>(cores[tid])->storeAndRecord(addr, size, pc);
 }

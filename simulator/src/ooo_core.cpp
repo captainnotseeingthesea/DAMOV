@@ -56,15 +56,15 @@
 #define RF_READS_PER_CYCLE 3
 
 //top-down
-uint64_t lastCommitCycleLoad = 0;
-uint64_t lastCommitCycleLoad_prev = 0;
+// uint64_t lastCommitCycleLoad = 0;
+// uint64_t lastCommitCycleLoad_prev = 0;
 
-uint64_t lastCommitCycleStore_prev = 0;
-uint64_t lastCommitCycleStore = 0;
-uint64_t lastCommitCycleOther = 0;
+// uint64_t lastCommitCycleStore_prev = 0;
+// uint64_t lastCommitCycleStore = 0;
+// uint64_t lastCommitCycleOther = 0;
 
 
-OOOCore::OOOCore(FilterCache* _l1i, FilterCache* _l1d, GraphPrefetcher* _graphPrefetcher, g_string& _name) : Core(_name), l1i(_l1i), l1d(_l1d), graphPrefetcher(_graphPrefetcher), cRec(0, _name) {
+OOOCore::OOOCore(FilterCache* _l1i, FilterCache* _l1d, GraphPrefetcher* _graphPrefetcher, g_string& _name) : Core(_name, _graphPrefetcher), l1i(_l1i), l1d(_l1d), cRec(0, _name) {
     decodeCycle = DECODE_STAGE;  // allow subtracting from it
     curCycle = 0;
     phaseEndCycle = zinfo->phaseLength;
@@ -82,6 +82,9 @@ OOOCore::OOOCore(FilterCache* _l1i, FilterCache* _l1d, GraphPrefetcher* _graphPr
 
     instrs = uops = branchUops = fpAddSubUops = fpMulDivUops = bbls = approxInstrs = mispredBranches = predBranches = 0;
     mispredPenalty = opExecuted = 0, loadStallsTotal = 0, storeStallsTotal = 0;
+    graphLoadStallsTotal = allSallsTotal = 0;
+    lastLoadStallCycle = lastStoreStallCycle = lastGraphLoadStalCycle = lastStallCycle = 0;
+    offsetLoad = edgeLoad = weightLoad = propertyLoad = propertyStore = graphDataLoadLatency = 0;
 
     for (uint32_t i = 0; i < FWD_ENTRIES; i++) fwdArray[i].set((Address)(-1L), 0);
 
@@ -129,6 +132,13 @@ void OOOCore::initStats(AggregateStat* parentStat) {
     loadStallsTotalStat->init("loadStallsTotal", "stalls due to load", &loadStallsTotal); // top-down
     ProxyStat* storeStallsTotalStat = new ProxyStat();
     storeStallsTotalStat->init("storeStallsTotal", "stalls due to store", &storeStallsTotal); // top-down
+    ProxyStat* graphLoadStallsTotalStat = new ProxyStat();
+    graphLoadStallsTotalStat->init("graphLoadStallsTotal", "stalls due to graph load", &graphLoadStallsTotal); // top-down
+    ProxyStat* allStallsTotalStat = new ProxyStat();
+    allStallsTotalStat->init("allSallsTotal", "total stalls", &allSallsTotal); // top-down
+
+    ProxyStat* graphDataLoadLatencyStat = new ProxyStat();
+    graphDataLoadLatencyStat->init("graphDataLoadLatency", "Latency due to graph load", &graphDataLoadLatency);
 
     coreStat->append(cyclesStat);
     coreStat->append(cCyclesStat);
@@ -144,8 +154,11 @@ void OOOCore::initStats(AggregateStat* parentStat) {
     coreStat->append(mispredInstrsStat);
     coreStat->append(mispredPenaltyStat);
     coreStat->append(opExecutedStat);
+    coreStat->append(allStallsTotalStat);
     coreStat->append(loadStallsTotalStat);
     coreStat->append(storeStallsTotalStat);
+    coreStat->append(graphLoadStallsTotalStat);
+    coreStat->append(graphDataLoadLatencyStat);
 
 
 #ifdef OOO_STALL_STATS
@@ -158,6 +171,52 @@ void OOOCore::initStats(AggregateStat* parentStat) {
     coreStat->append(&spatial_l);
     temporal_l.init("temporalLocality", "Temporal Locality times 10000");
     coreStat->append(&temporal_l);
+
+    ProxyStat* totalLoadLatencyStat = new ProxyStat();
+    totalLoadLatencyStat->init("totalLoadLatency", "latency induced by loads", &totalLoadLatency);
+    ProxyStat* totalStoreLatencyStat = new ProxyStat();
+    totalStoreLatencyStat->init("totalStoreLatency", "latency induced by stores", &totalStoreLatency);
+    ProxyStat* totalLoadStat = new ProxyStat();
+    totalLoadStat->init("totalLoad", "num of total loads", &totalLoad);
+    ProxyStat* totalStoreStat = new ProxyStat();
+    totalStoreStat->init("totalStore", "num of total stores", &totalStore);
+    auto loadFunc = [this](){return totalLoad > 0 ? totalLoadLatency / totalLoad : 0;};
+    LambdaStat<decltype(loadFunc)>* averageLoadLatencyStat = new LambdaStat<decltype(loadFunc)>(loadFunc);
+    averageLoadLatencyStat->init("averageLoadLatency", "average load latency");
+    auto storeFunc = [this](){return totalStore > 0 ? totalStoreLatency / totalStore : 0;};
+    LambdaStat<decltype(storeFunc)>* averageStoreLatencyStat = new LambdaStat<decltype(storeFunc)>(storeFunc);
+    averageStoreLatencyStat->init("averageStoreLatency", "average store latency");
+
+    auto graphLoadFunc = [this](){
+        uint64_t totalGraphLoad = offsetLoad + edgeLoad + weightLoad + propertyLoad;
+        return totalGraphLoad > 0 ? graphDataLoadLatency / totalGraphLoad : 0;};
+    LambdaStat<decltype(graphLoadFunc)>* averageGraphLoadLatencyStat = new LambdaStat<decltype(graphLoadFunc)>(graphLoadFunc);
+    averageGraphLoadLatencyStat->init("averageGraphLoadLatency", "average graph load latency");
+
+    // graph data access monitor
+    ProxyStat* offsetLoadStat = new ProxyStat();
+    offsetLoadStat->init("offsetLoad", "num of graph offset loads", &offsetLoad);
+    ProxyStat* edgeLoadStat = new ProxyStat();
+    edgeLoadStat->init("edgeLoad", "num of graph edge loads", &edgeLoad);
+    ProxyStat* weightLoadStat = new ProxyStat();
+    weightLoadStat->init("weightLoad", "num of graph weight loads", &weightLoad);
+    ProxyStat* propertyLoadStat = new ProxyStat();
+    propertyLoadStat->init("propertyLoad", "num of graph property loads", &propertyLoad);
+    ProxyStat* propertyStoreStat = new ProxyStat();
+    propertyStoreStat->init("propertyStore", "num of graph property stores", &propertyStore);
+
+    coreStat->append(totalLoadLatencyStat);
+    coreStat->append(totalStoreLatencyStat);
+    coreStat->append(totalLoadStat);
+    coreStat->append(totalStoreStat);
+    coreStat->append(averageLoadLatencyStat);
+    coreStat->append(averageStoreLatencyStat);
+    coreStat->append(averageGraphLoadLatencyStat);
+    coreStat->append(offsetLoadStat);
+    coreStat->append(edgeLoadStat);
+    coreStat->append(weightLoadStat);
+    coreStat->append(propertyLoadStat);
+    coreStat->append(propertyStoreStat);
 
     parentStat->append(coreStat);
 }
@@ -196,15 +255,58 @@ void OOOCore::PrefetcherLoadDestFunc(THREADID tid, DestInfo dest) {
     static_cast<OOOCore*>(cores[tid])->prefetcherLoadDest(dest);
 }
 
-inline void OOOCore::load(Address addr, uint32_t size) {
-   loadAddrs[loads] = addr;
-   loadSizes[loads] = size;
-   loads++;
+inline void OOOCore::load(Address addr, uint32_t size, Address pc) {
+    AccessInfo::DataType dataType = AccessInfo::DATA;
+
+    // check whether the data is graph data
+    if(zinfo->configGraph){
+        if((void *)addr >= zinfo->graphRegion.offsetStart && (void *)addr < zinfo->graphRegion.offsetEnd)
+        {
+            dataType = AccessInfo::OFFSET;
+            ++offsetLoad;
+        }
+        else if((void *)addr >= zinfo->graphRegion.edgeStart && (void *)addr < zinfo->graphRegion.edgeEnd)
+        {
+            dataType = AccessInfo::EDGE;
+            ++edgeLoad;
+        }
+        else if((void *)addr >= zinfo->graphRegion.weightStart && (void *)addr < zinfo->graphRegion.weightEnd)
+        {
+            dataType = AccessInfo::WEIGHT;
+            ++weightLoad;
+        }
+        else if((void *)addr >= zinfo->graphRegion.propertyStart && (void *)addr < zinfo->graphRegion.propertyEnd)
+        {
+            dataType = AccessInfo::PROPERTY;
+            ++propertyLoad;
+        }
+    }
+    if(graphPrefetcherEnabled && inGraphPrefetcherAddr((void *)addr))
+    {
+        Address offset = ((Address)addr - (Address)zinfo->graphPrefetcherAddr) / GRAPH_PREFETCHER_ELE_SIZE;
+        edgeLoad += (offset == DEST_NODE_INDEX);
+        weightLoad += (offset == WEIGHT_VALUE_INDEX);
+        propertyLoad += (offset == SRC_PROPERTY_INDEX || offset == DEST_PROPERTY_INDEX);
+    }
+    uint32_t index = loads + stores;
+    accesses[index] = {addr, pc, size, dataType, AccessInfo::LOAD};
+    loads++;
 }
 
-void OOOCore::store(Address addr, uint32_t size) {
-    storeAddrs[stores] = addr;
-    storeSizes[stores] = size;
+void OOOCore::store(Address addr, uint32_t size, Address pc) {
+    AccessInfo::DataType dataType = AccessInfo::DATA;
+    // check whether the data is graph data
+    if(zinfo->configGraph){
+        if((void *)addr >= zinfo->graphRegion.propertyStart && (void *)addr < zinfo->graphRegion.propertyEnd)
+        {
+            ++propertyStore;
+            uint64_t v = (addr - (Address)zinfo->graphRegion.propertyStart) / 8;
+            zinfo->affected_vertex[v] = 1;
+            dataType = AccessInfo::PROPERTY;
+        }
+    }
+    uint32_t index = loads + stores;
+    accesses[index] = {addr, pc, size, dataType, AccessInfo::STORE};
     stores++;
 }
 
@@ -212,7 +314,8 @@ void OOOCore::store(Address addr, uint32_t size) {
 // Predication is rare enough that we don't need to model it perfectly to be accurate (i.e. the uops still execute, retire, etc), but this is needed for correctness.
 void OOOCore::predFalseMemOp() {
     // I'm going to go out on a limb and assume just loads are predicated (this will not fail silently if it's a store)
-    loadAddrs[loads] = -1L;
+    uint32_t index = loads + stores;
+    accesses[index] = {-1L, 0, 0, AccessInfo::DATA, AccessInfo::LOAD};
     loads++;
 }
 
@@ -291,7 +394,8 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
             insWindow.advancePos(curCycle);
         }
 
-        uint64_t c2 = rob.minAllocCycle();
+        ROBEntry robEntry = rob.minAllocCycle();
+        uint64_t c2 = robEntry.cycle;
         uint64_t c3 = curCycle;
 
         uint64_t cOps = MAX(c0, c1);
@@ -301,26 +405,63 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
         //checking for top-down
         //top-down memory stalls
 
-        uint64_t load_stall_diff;
-        uint64_t store_stall_diff;
-
-         if((dispatchCycle > lastCommitCycleOther) & (dispatchCycle > lastStoreCommitCycle) & (lastStoreCommitCycle > lastCommitCycleOther)){
-            if(lastStoreCommitCycle > lastCommitCycleStore_prev){
-            	store_stall_diff = lastStoreCommitCycle - lastCommitCycleOther;
-            	storeStallsTotal += store_stall_diff;
+        // Collect stall cycles induced by ROB full
+        uint64_t stallStartCycle = max(c3, lastStallCycle);
+        if(stallStartCycle < c2)
+        {
+            if(stallStartCycle < c2)
+            {
+                allSallsTotal += c2 - stallStartCycle;
+                lastStallCycle = c2;
             }
-            lastCommitCycleStore_prev = lastStoreCommitCycle;
         }
 
-        if((dispatchCycle > lastCommitCycleOther) & (dispatchCycle > lastCommitCycleLoad) & (lastCommitCycleLoad > lastCommitCycleOther)){
-            if(lastCommitCycleLoad > lastCommitCycleLoad_prev){
-            	load_stall_diff = lastCommitCycleLoad - lastCommitCycleOther;
-            	loadStallsTotal += load_stall_diff;
+        if(robEntry.type == ROBEntryType::GRAPHLOAD || robEntry.type == ROBEntryType::LOAD)
+        {
+            stallStartCycle = max(c3, lastLoadStallCycle);
+            if(stallStartCycle < c2)
+            {
+                loadStallsTotal += c2 - stallStartCycle;
+                lastLoadStallCycle = c2;
             }
-            lastCommitCycleLoad_prev = lastCommitCycleLoad;
+            if(robEntry.type == ROBEntryType::GRAPHLOAD)
+            {
+                stallStartCycle = max(c3, lastGraphLoadStalCycle);
+                if(stallStartCycle < c2)
+                {
+                    graphLoadStallsTotal += c2 - stallStartCycle;
+                    lastGraphLoadStalCycle = c2;
+                }
+            }
+        }
+        else if(robEntry.type == ROBEntryType::GRAPHSTORE || robEntry.type == ROBEntryType::STORE)
+        {
+            stallStartCycle = max(c3, lastStoreStallCycle);
+            if(stallStartCycle < c2)
+            {
+                storeStallsTotal += c2 - stallStartCycle;
+                lastStoreStallCycle = c2;
+            }
         }
 
+        // uint64_t load_stall_diff;
+        // uint64_t store_stall_diff;
 
+        //  if((dispatchCycle > lastCommitCycleOther) & (dispatchCycle > lastStoreCommitCycle) & (lastStoreCommitCycle > lastCommitCycleOther)){
+        //     if(lastStoreCommitCycle > lastCommitCycleStore_prev){
+        //     	store_stall_diff = lastStoreCommitCycle - lastCommitCycleOther;
+        //     	storeStallsTotal += store_stall_diff;
+        //     }
+        //     lastCommitCycleStore_prev = lastStoreCommitCycle;
+        // }
+
+        // if((dispatchCycle > lastCommitCycleOther) & (dispatchCycle > lastCommitCycleLoad) & (lastCommitCycleLoad > lastCommitCycleOther)){
+        //     if(lastCommitCycleLoad > lastCommitCycleLoad_prev){
+        //     	load_stall_diff = lastCommitCycleLoad - lastCommitCycleOther;
+        //     	loadStallsTotal += load_stall_diff;
+        //     }
+        //     lastCommitCycleLoad_prev = lastCommitCycleLoad;
+        // }
 
         // info("IW 0x%lx %d %ld %ld %x", bblAddr, i, c2, dispatchCycle, uop->portMask);
         // NOTE: Schedule can adjust both cur and dispatch cycles
@@ -333,6 +474,7 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
         }
 
         uint64_t commitCycle;
+        bool graphPrefetcherAccess = false;
         // LSU simulation
         // NOTE: Ever-so-slightly faster than if-else if-else if-else
 	switch (uop->type) {
@@ -340,14 +482,16 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
                 {
                      commitCycle = dispatchCycle + uop->lat;
                      //top-down
-                     if((uop->type != UOP_LOAD) && (uop->type != UOP_STORE)) lastCommitCycleOther = commitCycle;
+                    //  if((uop->type != UOP_LOAD) && (uop->type != UOP_STORE)) lastCommitCycleOther = commitCycle;
+                    rob.markRetire(commitCycle, ROBEntryType::OTHER);
                 }
                 break;
 
             case UOP_LOAD:
                 {
                     // dispatchCycle = MAX(loadQueue.minAllocCycle(), dispatchCycle);
-                    uint64_t lqCycle = loadQueue.minAllocCycle();
+                    ++totalLoad;
+                    uint64_t lqCycle = loadQueue.minAllocCycle().cycle;
                     if (lqCycle > dispatchCycle) {
 #ifdef LSU_IW_BACKPRESSURE
                         insWindow.poisonRange(curCycle, lqCycle, 0x4 /*PORT_2, loads*/);
@@ -358,25 +502,31 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
                     // Wait for all previous store addresses to be resolved
                     dispatchCycle = MAX(lastStoreAddrCommitCycle+1, dispatchCycle);
 
-                    Address addr = loadAddrs[loadIdx];
-                    uint32_t size = loadSizes[loadIdx];
+                    uint32_t index = loadIdx + storeIdx;
+                    Address addr = accesses[index].addr;
+                    uint32_t size = accesses[index].size;
                     loadIdx++;
 
                     uint64_t reqSatisfiedCycle = dispatchCycle;
-                    if (addr != ((Address)-1L)) {
-                        if(inGraphPrefetcherAddr((void *)addr))
+                    if(addr != -1L)
+                    {
+                        if(graphPrefetcherEnabled && inGraphPrefetcherAddr((void *)addr))
                         {
                             Address offset = ((Address)addr - (Address)zinfo->graphPrefetcherAddr) / GRAPH_PREFETCHER_ELE_SIZE;
                             reqSatisfiedCycle = graphPrefetcher->load(offset, dispatchCycle);
+                            uint64_t latency = (reqSatisfiedCycle - dispatchCycle);
+                            graphDataLoadLatency += latency;
+                            graphPrefetcherAccess = true;
                         }
                         else
                         {
-                            reqSatisfiedCycle = l1d->load(addr, dispatchCycle) + L1D_LAT;
+                            reqSatisfiedCycle = l1d->load(accesses[index], dispatchCycle) + L1D_LAT;
                         }
-                        cRec.record(curCycle, dispatchCycle, reqSatisfiedCycle);
-                        if(zinfo->numCores == 1){
-                            locality_monitor.push_address(addr,size);
-                        }
+                    }
+                    bool isGraphData = accesses[index].isGraphData();
+                    cRec.record(curCycle, dispatchCycle, reqSatisfiedCycle);
+                    if(zinfo->numCores == 1){
+                        locality_monitor.push_address(addr,size);
                     }
 
                     // Enforce st-ld forwarding
@@ -393,15 +543,24 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
                     }
 
                     commitCycle = reqSatisfiedCycle;
-                    lastCommitCycleLoad = commitCycle;
+                    // lastCommitCycleLoad = commitCycle;
                     loadQueue.markRetire(commitCycle);
+                    uint32_t loadLatency = commitCycle - dispatchCycle;
+                    totalLoadLatency += loadLatency;
+                    rob.markRetire(commitCycle, (isGraphData || graphPrefetcherAccess) ? ROBEntryType::GRAPHLOAD : ROBEntryType::LOAD);
+                    if(isGraphData)
+                    {
+                        graphDataLoadLatency += loadLatency;
+                        // info("reqCycle: %u, respCycle: %u, latency: %u", dispatchCycle, commitCycle, loadLatency);
+                    }
                 }
                 break;
 
             case UOP_STORE:
                 {
                     // dispatchCycle = MAX(storeQueue.minAllocCycle(), dispatchCycle);
-                    uint64_t sqCycle = storeQueue.minAllocCycle();
+                    ++totalStore;
+                    uint64_t sqCycle = storeQueue.minAllocCycle().cycle;
                     if (sqCycle > dispatchCycle) {
 #ifdef LSU_IW_BACKPRESSURE
                         insWindow.poisonRange(curCycle, sqCycle, 0x10 /*PORT_4, stores*/);
@@ -412,23 +571,25 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
                     // Wait for all previous store addresses to be resolved (not just ours :))
                     dispatchCycle = MAX(lastStoreAddrCommitCycle+1, dispatchCycle);
 
-                    Address addr = storeAddrs[storeIdx];
-                    uint32_t size = storeSizes[storeIdx];
+                    uint32_t index = loadIdx + storeIdx;
+                    Address addr = accesses[index].addr;
+                    uint32_t size = accesses[index].size;
                     storeIdx++;
 
                     if(zinfo->numCores == 1){
                         locality_monitor.push_address(addr, size);
                     }
-                    uint64_t reqSatisfiedCycle;
-                    if (inGraphPrefetcherAddr((void *)addr))
+                    uint64_t reqSatisfiedCycle = dispatchCycle;
+                    if(graphPrefetcherEnabled && inGraphPrefetcherAddr((void *)addr))
                     {
                         Address offset = ((Address)addr - (Address)zinfo->graphPrefetcherAddr) / GRAPH_PREFETCHER_ELE_SIZE;
                         reqSatisfiedCycle = graphPrefetcher->store(offset, dispatchCycle);
                     }
                     else
                     {
-                        reqSatisfiedCycle = l1d->store(addr, dispatchCycle) + L1D_LAT;
+                        reqSatisfiedCycle = l1d->store(accesses[index], dispatchCycle) + L1D_LAT;
                     }
+                    bool isGraphData = accesses[index].isGraphData();
                     cRec.record(curCycle, dispatchCycle, reqSatisfiedCycle);
 
                     // Fill the forwarding table
@@ -437,12 +598,15 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
                     commitCycle = reqSatisfiedCycle;
                     lastStoreCommitCycle = MAX(lastStoreCommitCycle, reqSatisfiedCycle);
                     storeQueue.markRetire(commitCycle);
+                    totalStoreLatency += commitCycle - dispatchCycle;
+                    rob.markRetire(commitCycle, isGraphData ? ROBEntryType::GRAPHSTORE : ROBEntryType::STORE);
                 }
                 break;
 
             case UOP_STORE_ADDR:
                 commitCycle = dispatchCycle + uop->lat;
                 lastStoreAddrCommitCycle = MAX(lastStoreAddrCommitCycle, commitCycle);
+                rob.markRetire(commitCycle, ROBEntryType::STOREADDR);
                 break;
 
             //case UOP_FENCE:  //make gcc happy
@@ -452,11 +616,10 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
                 // info("%d %ld %ld", uop->lat, lastStoreAddrCommitCycle, lastStoreCommitCycle);
                 // force future load serialization
                 lastStoreAddrCommitCycle = MAX(commitCycle, MAX(lastStoreAddrCommitCycle, lastStoreCommitCycle + uop->lat));
+                rob.markRetire(commitCycle, ROBEntryType::OTHER);
+
                 // info("%d %ld %ld X", uop->lat, lastStoreAddrCommitCycle, lastStoreCommitCycle);
         }
-
-        // Mark retire at ROB
-        rob.markRetire(commitCycle);
 
         // Record dependences
         regScoreboard[uop->rd[0]] = commitCycle;
@@ -535,7 +698,8 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
         uint64_t reqCycleBefore = reqCycle;
         for (uint32_t i = 0; i < 5*64/lineSize; i++) {
             mispredInstrs++; // top-down
-            uint64_t fetchLat = l1i->load(wrongPathAddr + lineSize*i, curCycle) - curCycle;
+            AccessInfo info = {wrongPathAddr + lineSize*i, 0, lineSize, AccessInfo::INS, AccessInfo::LOAD};
+            uint64_t fetchLat = l1i->load(info, curCycle) - curCycle;
             cRec.record(curCycle, curCycle, curCycle + fetchLat);
             uint64_t respCycle = reqCycle + fetchLat;
             if (respCycle > lastCommitCycle) {
@@ -567,7 +731,8 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
         // Do not model fetch throughput limit here, decoder-generated stalls already include it
         // We always call fetches with curCycle to avoid upsetting the weave
         // models (but we could move to a fetch-centric recorder to avoid this)
-        uint64_t fetchLat = l1i->load(fetchAddr, curCycle) - curCycle;
+        AccessInfo info = {fetchAddr, 0, lineSize, AccessInfo::INS, AccessInfo::LOAD};
+        uint64_t fetchLat = l1i->load(info, curCycle) - curCycle;
         cRec.record(curCycle, curCycle, curCycle + fetchLat);
         fetchCycle += fetchLat;
     }
@@ -636,18 +801,18 @@ void OOOCore::advance(uint64_t targetCycle) {
 }
 
 // Pin interface code
-void OOOCore::LoadFunc(THREADID tid, ADDRINT addr, UINT32 size) {static_cast<OOOCore*>(cores[tid])->load(addr, size);}
-void OOOCore::StoreFunc(THREADID tid, ADDRINT addr, UINT32 size) {static_cast<OOOCore*>(cores[tid])->store(addr, size);}
+void OOOCore::LoadFunc(THREADID tid, ADDRINT addr, UINT32 size, ADDRINT pc) {static_cast<OOOCore*>(cores[tid])->load(addr, size, pc);}
+void OOOCore::StoreFunc(THREADID tid, ADDRINT addr, UINT32 size, ADDRINT pc) {static_cast<OOOCore*>(cores[tid])->store(addr, size, pc);}
 
-void OOOCore::PredLoadFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size) {
+void OOOCore::PredLoadFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size, ADDRINT pc) {
     OOOCore* core = static_cast<OOOCore*>(cores[tid]);
-    if (pred) core->load(addr, size);
+    if (pred) core->load(addr, size, pc);
     else core->predFalseMemOp();
 }
 
-void OOOCore::PredStoreFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size) {
+void OOOCore::PredStoreFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size, ADDRINT pc) {
     OOOCore* core = static_cast<OOOCore*>(cores[tid]);
-    if (pred) core->store(addr, size);
+    if (pred) core->store(addr, size, pc);
     else core->predFalseMemOp();
 }
 

@@ -3,7 +3,7 @@
 from __future__ import print_function
 import sys, os
 
-f = open("network", "w")
+f = open("network_64.mesh", "w")
 
 numCores = int(sys.argv[1])
 l1iPrefix = "l1i-"
@@ -37,8 +37,15 @@ print("Number of cores: " + sys.argv[1] + " requires a " + sys.argv[2] + "x" + s
 #                [0, 3],
 #                [3, 5]]
 
-channelsPerController = 1
-memControllers = [[0,0]]
+channelsPerController = 2
+memControllers=[[0, 1],
+               [0, 8],
+               [8, 1],
+               [8, 7],
+               [0, 4],
+               [8, 3]]
+
+
 added = []
 
 # Generate core mapping. Mesh stops without memory controllers contain a core.

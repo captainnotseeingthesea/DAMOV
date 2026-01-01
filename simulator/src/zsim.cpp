@@ -62,7 +62,6 @@
 #include "stats.h"
 #include "trace_driver.h"
 #include "virt/virt.h"
-#include "graph_prefetcher.h"
 
 //#include <signal.h> //can't include this, conflicts with PIN's
 
@@ -98,7 +97,7 @@ INT32 Usage() {
 /* Global Variables */
 
 std::ofstream dram_requests;
-uint32_t offloaded_region = 0; 
+uint32_t offloaded_region = 0;
 
 GlobSimInfo* zinfo;
 
@@ -126,7 +125,13 @@ GraphPrefetcherUnit graphPrefetcherUnit[MAX_THREADS];
 bool inGraphPrefetcherAddr(void * addr)
 {
     void * prefetcher_addr = zinfo->graphPrefetcherAddr;
-    return addr >= prefetcher_addr && addr <= (static_cast<UINT64 *>(prefetcher_addr) + zinfo->graphPrefetcherAddrRegion);
+    return addr >= prefetcher_addr && addr < (prefetcher_addr + zinfo->graphPrefetcherAddrRegion);
+}
+
+bool isGraphLoad(uint64_t * addr)
+{
+    uint64_t * prefetcher_addr = (uint64_t *)(zinfo->graphPrefetcherAddr);
+    return addr >= (prefetcher_addr + SRC_PROPERTY_INDEX) && addr <= (prefetcher_addr + DEST_PROPERTY_INDEX);
 }
 
 static inline void clearCid(uint32_t tid) {
@@ -182,12 +187,12 @@ VOID FFThread(VOID* arg);
 
 InstrFuncPtrs fPtrs[MAX_THREADS] ATTR_LINE_ALIGNED; //minimize false sharing
 
-VOID PIN_FAST_ANALYSIS_CALL IndirectLoadSingle(THREADID tid, ADDRINT addr, UINT32 size) {
-    fPtrs[tid].loadPtr(tid, addr, size);
+VOID PIN_FAST_ANALYSIS_CALL IndirectLoadSingle(THREADID tid, ADDRINT addr, UINT32 size, ADDRINT pc) {
+    fPtrs[tid].loadPtr(tid, addr, size, pc);
 }
 
-VOID PIN_FAST_ANALYSIS_CALL IndirectStoreSingle(THREADID tid, ADDRINT addr, UINT32 size) {
-    fPtrs[tid].storePtr(tid, addr, size);
+VOID PIN_FAST_ANALYSIS_CALL IndirectStoreSingle(THREADID tid, ADDRINT addr, UINT32 size, ADDRINT pc) {
+    fPtrs[tid].storePtr(tid, addr, size, pc);
 }
 
 VOID PIN_FAST_ANALYSIS_CALL IndirectBasicBlock(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {
@@ -198,12 +203,12 @@ VOID PIN_FAST_ANALYSIS_CALL IndirectRecordBranch(THREADID tid, ADDRINT branchPc,
     fPtrs[tid].branchPtr(tid, branchPc, taken, takenNpc, notTakenNpc);
 }
 
-VOID PIN_FAST_ANALYSIS_CALL IndirectPredLoadSingle(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size) {
-    fPtrs[tid].predLoadPtr(tid, addr, pred, size);
+VOID PIN_FAST_ANALYSIS_CALL IndirectPredLoadSingle(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size, ADDRINT pc) {
+    fPtrs[tid].predLoadPtr(tid, addr, pred, size, pc);
 }
 
-VOID PIN_FAST_ANALYSIS_CALL IndirectPredStoreSingle(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size) {
-    fPtrs[tid].predStorePtr(tid, addr, pred, size);
+VOID PIN_FAST_ANALYSIS_CALL IndirectPredStoreSingle(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size, ADDRINT pc) {
+    fPtrs[tid].predStorePtr(tid, addr, pred, size, pc);
 }
 
 
@@ -224,14 +229,14 @@ void Join(uint32_t tid) {
     fPtrs[tid] = cores[tid]->GetFuncPtrs(); //back to normal pointers
 }
 
-VOID JoinAndLoadSingle(THREADID tid, ADDRINT addr, UINT32 size) {
+VOID JoinAndLoadSingle(THREADID tid, ADDRINT addr, UINT32 size, ADDRINT pc) {
     Join(tid);
-    fPtrs[tid].loadPtr(tid, addr, size);
+    fPtrs[tid].loadPtr(tid, addr, size, pc);
 }
 
-VOID JoinAndStoreSingle(THREADID tid, ADDRINT addr, UINT32 size) {
+VOID JoinAndStoreSingle(THREADID tid, ADDRINT addr, UINT32 size, ADDRINT pc) {
     Join(tid);
-    fPtrs[tid].storePtr(tid, addr, size);
+    fPtrs[tid].storePtr(tid, addr, size, pc);
 }
 
 VOID JoinAndBasicBlock(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {
@@ -244,23 +249,23 @@ VOID JoinAndRecordBranch(THREADID tid, ADDRINT branchPc, BOOL taken, ADDRINT tak
     fPtrs[tid].branchPtr(tid, branchPc, taken, takenNpc, notTakenNpc);
 }
 
-VOID JoinAndPredLoadSingle(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size) {
+VOID JoinAndPredLoadSingle(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size, ADDRINT pc) {
     Join(tid);
-    fPtrs[tid].predLoadPtr(tid, addr, pred,  size);
+    fPtrs[tid].predLoadPtr(tid, addr, pred,  size, pc);
 }
 
-VOID JoinAndPredStoreSingle(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size) {
+VOID JoinAndPredStoreSingle(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size, ADDRINT pc) {
     Join(tid);
-    fPtrs[tid].predStorePtr(tid, addr, pred, size);
+    fPtrs[tid].predStorePtr(tid, addr, pred, size, pc);
 }
 
 
-VOID JoinAndOffloadBegin(THREADID tid){ 
+VOID JoinAndOffloadBegin(THREADID tid){
     Join(tid);
     fPtrs[tid].OffloadBegin(tid);
 }
 
-VOID JoinAndOffloadEnd(THREADID tid){ 
+VOID JoinAndOffloadEnd(THREADID tid){
     Join(tid);
     fPtrs[tid].OffloadEnd(tid);
 }
@@ -276,12 +281,12 @@ VOID JoinAndPrefetcherLoadDest(THREADID tid, DestInfo dest) {
 }
 
 // NOP variants: Do nothing
-VOID NOPLoadStoreSingle(THREADID tid, ADDRINT addr, UINT32 size) {}
+VOID NOPLoadStoreSingle(THREADID tid, ADDRINT addr, UINT32 size, ADDRINT pc) {}
 VOID NOPBasicBlock(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {}
 VOID NOPRecordBranch(THREADID tid, ADDRINT addr, BOOL taken, ADDRINT takenNpc, ADDRINT notTakenNpc) {}
-VOID NOPPredLoadStoreSingle(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size) {}
+VOID NOPPredLoadStoreSingle(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size, ADDRINT pc) {}
 VOID NOPPredOffloadBegin(THREADID tid) {}
-VOID NOPPredOffloadEnd(THREADID tid) {} 
+VOID NOPPredOffloadEnd(THREADID tid) {}
 VOID NOPPrefetcherLoadSrc(THREADID tid, SrcInfo src) {}
 VOID NOPPrefetcherLoadDest(THREADID tid, DestInfo dest) {}
 
@@ -603,6 +608,20 @@ VOID InstrumentConfig(VOID * addr)
     zinfo->graphPrefetcherAddr = addr;
 }
 
+// Set the graph data region
+VOID ConfigGraphRegion(GraphRegion *param)
+{
+    info("Configure graph data region");
+    zinfo->graphRegion = *param;
+    zinfo->affected_vertex.resize(param->vertex_num);
+    uint64_t n = param->vertex_num;
+    for(uint64_t i = 0; i < n; ++i)
+    {
+        zinfo->affected_vertex[i] = 0;
+    }
+    zinfo->configGraph = true;
+}
+
 // Called when a image is loaded
 VOID ImageLoad(IMG img, VOID *v)
 {
@@ -613,46 +632,91 @@ VOID ImageLoad(IMG img, VOID *v)
         RTN_Open(configRtn);
         // 在函数入口处插入插桩例程
         RTN_InsertCall(configRtn, IPOINT_BEFORE, (AFUNPTR)InstrumentConfig, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_END);
-        
+
         RTN_Close(configRtn);
     }
-}
 
-// Used to get the prefetched data
-void get_info(THREADID tid, int64_t node)
-{
-    int64_t src_property = *((int64_t *)graphPrefetcherParams.property + node);
-    graphPrefetcherUnit[tid].srcInfo.push_back((GraphSrcInfo){node, src_property});
-    int start = *((int *)graphPrefetcherParams.offset + node);
-    int end = *((int *)graphPrefetcherParams.offset + node + 1);
-    for(int i = start; i < end; ++i)
+    //Instrument the graph data configure function to get the graph addr
+    RTN configGraphRtn = RTN_FindByName(img, "config_graph_region");
+    if (RTN_Valid(configGraphRtn))
     {
-        int neighbor = *((int *)graphPrefetcherParams.edge + i);
-        int64_t weight = *((int64_t *)graphPrefetcherParams.weight + i);
-        int64_t dest_property = *((int64_t *)graphPrefetcherParams.property + neighbor);
-        graphPrefetcherUnit[tid].destInfo.push_back((GraphDestInfo){neighbor, weight, dest_property});
+        RTN_Open(configGraphRtn);
+        // 在函数入口处插入插桩例程
+        RTN_InsertCall(configGraphRtn, IPOINT_BEFORE, (AFUNPTR)ConfigGraphRegion, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_END);
+
+        RTN_Close(configGraphRtn);
     }
 }
 
-// Used to get the addr to be prefetched
-void getPrefetchingAddr(THREADID tid, int64_t node)
+bool shouldUpdate(DependencyData src_property, DependencyData dest_property, uint32_t weight)
 {
-
-    Address offsetStart = (Address)((int *)graphPrefetcherParams.offset + node);
-    Address offsetEnd = (Address)((int *)graphPrefetcherParams.offset + node + 1);
-    Address srcProperty = (Address)((int64_t *)graphPrefetcherParams.property + node);
-    int start = *((int *)graphPrefetcherParams.offset + node);
-    int end = *((int *)graphPrefetcherParams.offset + node + 1);
-    uint32_t numNeighbors = end - start;
-    fPtrs[tid].prefetcherLoadSrc(tid, (SrcInfo){srcProperty, offsetStart, offsetEnd, numNeighbors});
-    for(int i = start; i < end; ++i)
+    bool valid;
+    uint32_t new_val;
+    switch (zinfo->algorithm)
     {
-        int neighbor = *((int *)graphPrefetcherParams.edge + i);
-        Address edge = (Address)((int *)graphPrefetcherParams.edge + i);
-        Address weight = (Address)((int64_t *)graphPrefetcherParams.weight + i);
-        Address destProperty = (Address)((int64_t *)graphPrefetcherParams.property + neighbor);
-        fPtrs[tid].prefetcherLoadDest(tid, (DestInfo){edge, weight, destProperty});
+        case ALG_SSSP:
+            new_val = src_property.value + weight;
+            valid = new_val < dest_property.value;
+            break;
+        case ALG_BFS:
+            new_val = src_property.value + 1;
+            valid = new_val < dest_property.value;
+            break;
+        case ALG_SSWP:
+            new_val = min(src_property.value, weight);
+            valid = new_val > dest_property.value;
+            break;
+        case ALG_CC:
+            new_val = src_property.value;
+            valid = new_val < dest_property.value;
+            break;
+        default:
+            panic("Invalid algorithm")
+            break;
     }
+    return valid;
+}
+
+void get_root(THREADID tid)
+{
+    // get root data
+    uint32_t curSrcIndex = graphPrefetcherUnit[tid].curSrcIndex;
+    uint32_t node = *((uint32_t *)graphPrefetcherUnit[tid].worklist + curSrcIndex);
+    uint64_t start = *((uint64_t *)graphPrefetcherParams.offset + node);
+    uint64_t end = *((uint64_t *)graphPrefetcherParams.offset + node + 1);
+    graphPrefetcherUnit[tid].graphSrcInfo.src_node = node;
+    graphPrefetcherUnit[tid].graphSrcInfo.offsetStart = start;
+    graphPrefetcherUnit[tid].graphSrcInfo.offsetEnd = end;
+    graphPrefetcherUnit[tid].graphSrcInfo.curOffset = start;
+    graphPrefetcherUnit[tid].graphSrcInfo.readyBits = SRC_DATA_READY;
+
+    // get root addr
+    Address nodeAddr = (Address)((uint32_t *)graphPrefetcherUnit[tid].worklist + curSrcIndex);
+    Address offsetStart = (Address)((uint64_t *)graphPrefetcherParams.offset + node);
+    Address offsetEnd = (Address)((uint64_t *)graphPrefetcherParams.offset + node + 1);
+    Address srcProperty = (Address)((DependencyData *)graphPrefetcherParams.property + node);
+    graphPrefetcherUnit[tid].graphSrcInfo.srcInfo = (SrcInfo){nodeAddr, srcProperty, offsetStart, offsetEnd};
+}
+
+void get_neighbor(THREADID tid)
+{
+    uint32_t curOffset = graphPrefetcherUnit[tid].graphSrcInfo.curOffset;
+    assert(curOffset < graphPrefetcherUnit[tid].graphSrcInfo.offsetEnd);
+    // get neighbor data
+    uint64_t neighbor = *((uint64_t *)graphPrefetcherParams.edge + curOffset);
+    if(zinfo->weightEnable)
+    {
+        uint64_t weight = *((uint64_t *)graphPrefetcherParams.weight + curOffset);
+        graphPrefetcherUnit[tid].graphDestInfo.weight_value = weight;
+    }
+    graphPrefetcherUnit[tid].graphDestInfo.dest_node = neighbor;
+    graphPrefetcherUnit[tid].graphDestInfo.readyBits = zinfo->weightEnable ? DEST_DATA_READY : DEST_DATA_READY_WITHOUT_WEIGHT;
+
+    // get neighbor address
+    Address edgeAddr = (Address)((uint64_t *)graphPrefetcherParams.edge + curOffset);
+    Address weightAddr = (Address)((uint64_t *)graphPrefetcherParams.weight + curOffset);
+    Address destPropertyAddr = (Address)((DependencyData *)graphPrefetcherParams.property + neighbor);
+    graphPrefetcherUnit[tid].graphDestInfo.destInfo = (DestInfo){edgeAddr, weightAddr, destPropertyAddr, true};
 }
 
 // Used to set the parameters of the graph prefetchers
@@ -661,7 +725,8 @@ VOID PIN_FAST_ANALYSIS_CALL setGraphPrefetcher(VOID *addr, ADDRINT val, THREADID
     // 判断addr是否在指定的内存地址范围内
     if(inGraphPrefetcherAddr(addr))
     {
-        uint32_t index = ((uint64_t)addr - (uint64_t)zinfo->graphPrefetcherAddr) / GRAPH_PREFETCHER_ELE_SIZE;
+        uint64_t offset = (uint64_t)addr - (uint64_t)zinfo->graphPrefetcherAddr;
+        uint64_t index = offset / 8;
         switch (index)
         {
         case OFFSET_INDEX:
@@ -681,11 +746,29 @@ VOID PIN_FAST_ANALYSIS_CALL setGraphPrefetcher(VOID *addr, ADDRINT val, THREADID
             // std::cout << "property: " << graphPrefetcherParams.property << std::endl;
             break;
         case SRC_NODE_INDEX:
-            get_info(tid, val);
-            // std::cout << "src_node: " << graphPrefetcherUnit[tid].src_node << std::endl;
+
+        break;
+        case WORKLIST_INDEX:
+            graphPrefetcherUnit[tid].worklist = val;
+            graphPrefetcherUnit[tid].worklistSet = true;
+            if(graphPrefetcherUnit[tid].worklistSet && graphPrefetcherUnit[tid].numNodesSet)
+            {
+                get_root(tid);
+                graphPrefetcherUnit[tid].worklistSet = graphPrefetcherUnit[tid].numNodesSet = false;
+            }
+            break;
+        case NUMNODE_INDEX:
+            graphPrefetcherUnit[tid].numNodes = val;
+            graphPrefetcherUnit[tid].curSrcIndex = 0;
+            graphPrefetcherUnit[tid].numNodesSet = true;
+            if(graphPrefetcherUnit[tid].worklistSet && graphPrefetcherUnit[tid].numNodesSet)
+            {
+                get_root(tid);
+                graphPrefetcherUnit[tid].worklistSet = graphPrefetcherUnit[tid].numNodesSet = false;
+            }
             break;
         default:
-            panic("invalid index");
+            panic("invalid index"); // This problem should be solved
             break;
         }
     }
@@ -697,84 +780,156 @@ ADDRINT PIN_FAST_ANALYSIS_CALL getFromGraphPrefetcher(void * addr, THREADID tid)
     ADDRINT value;
     if(inGraphPrefetcherAddr(addr))
     {
-        uint32_t index = ((uint64_t)addr - (uint64_t)zinfo->graphPrefetcherAddr) / GRAPH_PREFETCHER_ELE_SIZE;
-        ADDRINT data = 0;
-
+        uint64_t offset = (uint64_t)addr - (uint64_t)zinfo->graphPrefetcherAddr;
+        uint64_t index = offset / 8;
+        uint64_t data;
+        DependencyData dependencyData;
+        auto &srcInfo = graphPrefetcherUnit[tid].graphSrcInfo;
+        auto &destInfo = graphPrefetcherUnit[tid].graphDestInfo;
         switch (index)
         {
         case UPDATES_SIZE_INDEX:
-            data = graphPrefetcherUnit[tid].destInfo.size();
+            data = 0;
+            while(srcInfo.curOffset < srcInfo.offsetEnd)
+            {
+                get_neighbor(tid);
+                srcInfo.curOffset++;
+                DependencyData dest_property = *((DependencyData *)graphPrefetcherParams.property + destInfo.dest_node);
+                bool valid = zinfo->filterEnable ? shouldUpdate(srcInfo.srcData, dest_property, destInfo.weight_value) : true;
+                destInfo.destInfo.valid = valid;
+                fPtrs[tid].prefetcherLoadDest(tid, destInfo.destInfo);
+                if(valid)
+                {
+                    data = 1;
+                    destInfo.destData = dest_property;
+                    break;
+                }
+            }
+            if(data == 0)
+            {
+                assert(srcInfo.readyBits == 0);
+                if(++graphPrefetcherUnit[tid].curSrcIndex < graphPrefetcherUnit[tid].numNodes)
+                {
+                    get_root(tid);
+                }
+            }
+            PIN_SafeCopy(&value, &data, sizeof(ADDRINT));
+            return value;
+        case DEST_NODE_INDEX:
+            if(destInfo.readyBits & (1 << DEST_NODE))
+            {
+                data = destInfo.dest_node;
+                destInfo.readyBits &= ~(1 << DEST_NODE);
+                PIN_SafeCopy(&value, &data, sizeof(ADDRINT));
+                return value;
+            }
+            panic("no dest node to fetch!!!");
             break;
         case SRC_PROPERTY_INDEX:
-            if(!graphPrefetcherUnit[tid].srcInfo.empty()){
-                data = graphPrefetcherUnit[tid].srcInfo.front().src_property;
-                graphPrefetcherUnit[tid].srcInfo.erase(graphPrefetcherUnit[tid].srcInfo.begin());
-            }
-            else
+            if(srcInfo.readyBits & (1 << SRC_PROPERTY))
             {
-                panic("no src node to fetch!!!");
+                // dependencyData = srcInfo.src_property;
+                dependencyData = *((DependencyData *)graphPrefetcherParams.property + srcInfo.src_node);
+                srcInfo.srcData = dependencyData;
+                srcInfo.readyBits &= ~(1 << SRC_PROPERTY);
+                PIN_SafeCopy(&value, &dependencyData, sizeof(ADDRINT));
+                return value;
             }
-            break;
-        case DEST_NODE_INDEX:
-            if(graphPrefetcherUnit[tid].readyBits & (1 << DEST_NODE) && (!graphPrefetcherUnit[tid].destInfo.empty()))
-            {
-                data = graphPrefetcherUnit[tid].destInfo.front().dest_node;
-                graphPrefetcherUnit[tid].readyBits &= ~(1 << DEST_NODE);
-            }
-            else
-            {
-                panic("no dest node to fetch!!!");
-            }
+            panic("no src value to fetch!!!");
             break;
         case WEIGHT_VALUE_INDEX:
-            if(graphPrefetcherUnit[tid].readyBits & (1 << WEIGHT_VALUE) && (!graphPrefetcherUnit[tid].destInfo.empty()))
+            if(destInfo.readyBits & (1 << WEIGHT_VALUE))
             {
-                data = graphPrefetcherUnit[tid].destInfo.front().weight_value;
-                graphPrefetcherUnit[tid].readyBits &= ~(1 << WEIGHT_VALUE);
+                data = destInfo.weight_value;
+                destInfo.readyBits &= ~(1 << WEIGHT_VALUE);
+                PIN_SafeCopy(&value, &data, sizeof(ADDRINT));
+                return value;
             }
-            else
-            {
-                panic("no weight value to fetch!!!");
-            }
+            panic("no weight value to fetch!!!");
             break;
         case DEST_PROPERTY_INDEX:
-            if(graphPrefetcherUnit[tid].readyBits & (1 << DEST_PROPERTY) && (!graphPrefetcherUnit[tid].destInfo.empty()))
+            if(destInfo.readyBits & (1 << DEST_PROPERTY))
             {
-                data = graphPrefetcherUnit[tid].destInfo.front().dest_property;
-                graphPrefetcherUnit[tid].readyBits &= ~(1 << DEST_PROPERTY);
+                destInfo.readyBits &= ~(1 << DEST_PROPERTY);
+                PIN_SafeCopy(&value, &(destInfo.destData), sizeof(ADDRINT));
+                return value;
             }
-            else
+            panic("no dest value to fetch!!!");
+            break;
+        case WORKNODE_INDEX:
+            fPtrs[tid].prefetcherLoadSrc(tid, srcInfo.srcInfo);
+            if(srcInfo.readyBits & (1 << SRC_NODE))
             {
-                panic("no dest property to fetch!!!");
+                data = srcInfo.src_node;
+                srcInfo.readyBits &= ~(1 << SRC_NODE);
+                PIN_SafeCopy(&value, &data, sizeof(ADDRINT));
+                return value;
             }
+            panic("no src node to fetch!!!");
             break;
         default:
-            panic("invalid index!!!");
-        }     
-        if(graphPrefetcherUnit[tid].readyBits == 0)
-        {
-            graphPrefetcherUnit[tid].destInfo.erase(graphPrefetcherUnit[tid].destInfo.begin());
-            graphPrefetcherUnit[tid].readyBits = GRAPH_DATA_READY;
+            panic("invalid index: %d!!!", index);
         }
-        PIN_SafeCopy(&value, &data, sizeof(ADDRINT));
-        return value;
     }
-    PIN_SafeCopy(&value, addr, sizeof(ADDRINT));
+    PIN_SafeCopy(&value, addr, sizeof(uint64_t));
     return value;
 }
 
-VOID PIN_FAST_ANALYSIS_CALL getGraphPrefetchingAddr(VOID *addr, ADDRINT val, THREADID tid)
-{
-    if(inGraphPrefetcherAddr(addr))
-    {
-        uint32_t index = ((uint64_t)addr - (uint64_t)zinfo->graphPrefetcherAddr) / GRAPH_PREFETCHER_ELE_SIZE;
-        if(index == SRC_NODE_INDEX)
-        {
-            int64_t node = val;
-            getPrefetchingAddr(tid, node);
-        }
-    }
-}
+// VOID xmm_arg(void * addr, THREADID tid, PIN_REGISTER* regRef, UINT32 regno)
+// {
+//     if(inGraphPrefetcherAddr(addr))
+//     {
+//         uint64_t offset = (uint64_t)addr - (uint64_t)zinfo->graphPrefetcherAddr;
+//         uint64_t index = (offset - 32) / 4 + 4;
+//         float data;
+//         switch (index)
+//         {
+//         case SRC_PROPERTY_INDEX:
+//             if(!graphPrefetcherUnit[tid].srcInfo.empty()){
+//                 data = graphPrefetcherUnit[tid].srcInfo.front().src_property;
+//                 graphPrefetcherUnit[tid].srcInfo.erase(graphPrefetcherUnit[tid].srcInfo.begin());
+//             }
+//             else
+//             {
+//                 panic("no src node to fetch!!!");
+//             }
+//             break;
+//         case WEIGHT_VALUE_INDEX:
+//             if(graphPrefetcherUnit[tid].readyBits & (1 << WEIGHT_VALUE) && (!graphPrefetcherUnit[tid].destInfo.empty()))
+//             {
+//                 data = graphPrefetcherUnit[tid].destInfo.front().weight_value;
+//                 graphPrefetcherUnit[tid].readyBits &= ~(1 << WEIGHT_VALUE);
+//             }
+//             else
+//             {
+//                 panic("no weight value to fetch!!!");
+//             }
+//             break;
+//         case DEST_PROPERTY_INDEX:
+//             if(graphPrefetcherUnit[tid].readyBits & (1 << DEST_PROPERTY) && (!graphPrefetcherUnit[tid].destInfo.empty()))
+//             {
+//                 data = graphPrefetcherUnit[tid].destInfo.front().dest_property;
+//                 graphPrefetcherUnit[tid].readyBits &= ~(1 << DEST_PROPERTY);
+//             }
+//             else
+//             {
+//                 panic("no dest property to fetch!!!");
+//             }
+//             break;
+//         default:
+//             panic("invalid index!!!");
+//         }
+//         if(graphPrefetcherUnit[tid].readyBits == 0)
+//         {
+//             graphPrefetcherUnit[tid].destInfo.erase(graphPrefetcherUnit[tid].destInfo.begin());
+//             graphPrefetcherUnit[tid].readyBits = GRAPH_DATA_READY;
+//         }
+//         PIN_SafeCopy(&regRef[0], &data, sizeof(float));
+//         return;
+//     }
+//     PIN_SafeCopy(&regRef[0], addr, sizeof(float));
+//     return;
+// }
 
 VOID Instruction(INS ins) {
     //Uncomment to print an instruction trace
@@ -787,45 +942,27 @@ VOID Instruction(INS ins) {
         AFUNPTR PredLoadFuncPtr = (AFUNPTR) IndirectPredLoadSingle;
         AFUNPTR PredStoreFuncPtr = (AFUNPTR) IndirectPredStoreSingle;
 
-        // Instrument the graph prefetcher operations 
-        if (INS_Opcode(ins) == XED_ICLASS_MOV &&
-            INS_IsMemoryWrite(ins)  &&
-            INS_OperandIsReg(ins, 1) &&
-            INS_OperandIsMemory(ins, 0)
-            )
-        {
-            REG reg = REG_FullRegName(INS_OperandReg(ins, 1));
-            INS_InsertCall(ins, 
-                        IPOINT_BEFORE, 
-                        (AFUNPTR)getGraphPrefetchingAddr, 
-                        IARG_FAST_ANALYSIS_CALL,
-                        IARG_MEMORYWRITE_PTR, 
-                        IARG_REG_VALUE, reg, 
-                        IARG_THREAD_ID, 
-                        IARG_END);
-        }
-
         if (INS_IsMemoryRead(ins)) {
             if (!INS_IsPredicated(ins)) {
-                INS_InsertCall(ins, IPOINT_BEFORE, LoadFuncPtr, IARG_FAST_ANALYSIS_CALL, IARG_THREAD_ID, IARG_MEMORYREAD_EA, IARG_MEMORYREAD_SIZE, IARG_END);
+                INS_InsertCall(ins, IPOINT_BEFORE, LoadFuncPtr, IARG_FAST_ANALYSIS_CALL, IARG_THREAD_ID, IARG_MEMORYREAD_EA, IARG_MEMORYREAD_SIZE, IARG_ADDRINT, INS_Address(ins), IARG_END);
             } else {
-                INS_InsertCall(ins, IPOINT_BEFORE, PredLoadFuncPtr, IARG_FAST_ANALYSIS_CALL, IARG_THREAD_ID, IARG_MEMORYREAD_EA, IARG_EXECUTING, IARG_MEMORYREAD_SIZE, IARG_END);
+                INS_InsertCall(ins, IPOINT_BEFORE, PredLoadFuncPtr, IARG_FAST_ANALYSIS_CALL,  IARG_THREAD_ID, IARG_MEMORYREAD_EA, IARG_EXECUTING, IARG_MEMORYREAD_SIZE, IARG_ADDRINT, INS_Address(ins), IARG_END);
             }
         }
 
         if (INS_HasMemoryRead2(ins)) {
             if (!INS_IsPredicated(ins)) {
-                INS_InsertCall(ins, IPOINT_BEFORE, LoadFuncPtr, IARG_FAST_ANALYSIS_CALL, IARG_THREAD_ID, IARG_MEMORYREAD2_EA, IARG_MEMORYREAD_SIZE, IARG_END);
+                INS_InsertCall(ins, IPOINT_BEFORE, LoadFuncPtr, IARG_FAST_ANALYSIS_CALL, IARG_THREAD_ID, IARG_MEMORYREAD2_EA, IARG_MEMORYREAD_SIZE, IARG_ADDRINT, INS_Address(ins), IARG_END);
             } else {
-                INS_InsertCall(ins, IPOINT_BEFORE, PredLoadFuncPtr, IARG_FAST_ANALYSIS_CALL, IARG_THREAD_ID, IARG_MEMORYREAD2_EA, IARG_EXECUTING, IARG_MEMORYREAD_SIZE, IARG_END);
+                INS_InsertCall(ins, IPOINT_BEFORE, PredLoadFuncPtr, IARG_FAST_ANALYSIS_CALL, IARG_THREAD_ID, IARG_MEMORYREAD2_EA, IARG_EXECUTING, IARG_MEMORYREAD_SIZE, IARG_ADDRINT, INS_Address(ins), IARG_END);
             }
         }
 
         if (INS_IsMemoryWrite(ins)) {
             if (!INS_IsPredicated(ins)) {
-                INS_InsertCall(ins, IPOINT_BEFORE,  StoreFuncPtr, IARG_FAST_ANALYSIS_CALL, IARG_THREAD_ID, IARG_MEMORYWRITE_EA, IARG_MEMORYWRITE_SIZE, IARG_END);
+                INS_InsertCall(ins, IPOINT_BEFORE,  StoreFuncPtr, IARG_FAST_ANALYSIS_CALL, IARG_THREAD_ID, IARG_MEMORYWRITE_EA, IARG_MEMORYWRITE_SIZE, IARG_ADDRINT, INS_Address(ins), IARG_END);
             } else {
-                INS_InsertCall(ins, IPOINT_BEFORE,  PredStoreFuncPtr, IARG_FAST_ANALYSIS_CALL, IARG_THREAD_ID, IARG_MEMORYWRITE_EA, IARG_EXECUTING, IARG_MEMORYWRITE_SIZE,IARG_END);
+                INS_InsertCall(ins, IPOINT_BEFORE,  PredStoreFuncPtr, IARG_FAST_ANALYSIS_CALL, IARG_THREAD_ID, IARG_MEMORYWRITE_EA, IARG_EXECUTING, IARG_MEMORYWRITE_SIZE, IARG_ADDRINT, INS_Address(ins), IARG_END);
             }
         }
 
@@ -844,17 +981,18 @@ VOID Instruction(INS ins) {
         )
     {
         REG reg = REG_FullRegName(INS_OperandReg(ins, 1));
-        INS_InsertCall(ins, 
-                    IPOINT_BEFORE, 
-                    (AFUNPTR)setGraphPrefetcher, 
+        INS_InsertCall(ins,
+                    IPOINT_BEFORE,
+                    (AFUNPTR)setGraphPrefetcher,
                     IARG_FAST_ANALYSIS_CALL,
-                    IARG_MEMORYWRITE_PTR, 
-                    IARG_REG_VALUE, reg, 
-                    IARG_THREAD_ID, 
+                    IARG_MEMORYWRITE_PTR,
+                    IARG_REG_VALUE, reg,
+                    IARG_THREAD_ID,
                     IARG_END);
     }
 
-    if(INS_Opcode(ins) == XED_ICLASS_MOV &&
+    // instrument integer operation (related to node index)
+    if(((INS_Opcode(ins) == XED_ICLASS_MOV)) &&
         INS_IsMemoryRead(ins) &&
         INS_OperandIsReg(ins, 0) &&
         INS_OperandIsMemory(ins, 1))
@@ -868,10 +1006,24 @@ VOID Instruction(INS ins) {
                        IARG_RETURN_REGS,
                        INS_OperandReg(ins, 0),
                        IARG_END);
-
-        // Delete the instruction
         INS_Delete(ins);
     }
+
+    // instrument floating point operation (related to property)
+    // if((INS_Opcode(ins) == XED_ICLASS_MOVSS)
+    //     && INS_IsMemoryRead(ins))
+    // {
+    //     REG r = INS_OperandReg(ins,0);
+    //     INS_InsertCall(ins,
+    //                    IPOINT_BEFORE,
+    //                    AFUNPTR(xmm_arg),
+    //                    IARG_MEMORYREAD_EA,
+    //                    IARG_THREAD_ID,
+    //                    IARG_REG_REFERENCE, r,
+    //                    IARG_UINT32, (r-REG_XMM_BASE),
+    //                    IARG_END);
+    //     INS_Delete(ins);
+    // }
 
     //Intercept and process magic ops
     /* xchg %rcx, %rcx is our chosen magic op. It is effectively a NOP, but it
@@ -1426,6 +1578,17 @@ VOID SimEnd() {
         for (uint32_t i = 0; i < zinfo->numCores; i++) {
             zinfo->cores[i]->finish();
         }
+        // count number of affeceted vertex
+        if(zinfo->configGraph)
+        {
+            uint64_t n = zinfo->graphRegion.vertex_num;
+            uint64_t affected_vertex_num = 0;
+            for(uint64_t i = 0; i < n; ++i)
+            {
+                affected_vertex_num += zinfo->affected_vertex[i];
+            }
+            zinfo->affected_vertex_num = affected_vertex_num;
+        }
         info("Dumping termination stats");
         zinfo->trigger = 20000;
         for (StatsBackend* backend : *(zinfo->statsBackends)) backend->dump(false /*unbuffered, write out*/);
@@ -1463,7 +1626,7 @@ VOID HandleMagicOp(THREADID tid, ADDRINT op) {
                 futex_lock(&zinfo->ffLock);
                 if (procTreeNode->isInFastForward()) {
                     //info("ROI_BEGIN, exiting fast-forward");
- 		    offloaded_region = 1; 
+ 		    offloaded_region = 1;
                     ExitFastForward();
                 } else {
                     //warn("Ignoring ROI_BEGIN magic op, not in fast-forward");

@@ -70,10 +70,10 @@ void NullCore::OffloadEnd(THREADID tid) {}
 void NullCore::PrefetcherLoadSrcFunc(THREADID tid, SrcInfo src) {}
 void NullCore::PrefetcherLoadDestFunc(THREADID tid, DestInfo dst) {}
 
-void NullCore::LoadFunc(THREADID tid, ADDRINT addr, UINT32 size) {}
-void NullCore::StoreFunc(THREADID tid, ADDRINT addr, UINT32 size) {}
-void NullCore::PredLoadFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size) {}
-void NullCore::PredStoreFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size) {}
+void NullCore::LoadFunc(THREADID tid, ADDRINT addr, UINT32 size, Address pc) {}
+void NullCore::StoreFunc(THREADID tid, ADDRINT addr, UINT32 size, Address pc) {}
+void NullCore::PredLoadFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size, Address pc) {}
+void NullCore::PredStoreFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size, Address pc) {}
 
 void NullCore::BblFunc(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {
     NullCore* core = static_cast<NullCore*>(cores[tid]);

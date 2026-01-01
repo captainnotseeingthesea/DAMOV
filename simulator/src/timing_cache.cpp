@@ -143,8 +143,13 @@ uint64_t TimingCache::access(MemReq& req) {
 
             if (evRec->hasRecord()) writebackRecord = evRec->popRecord();
         }
-
+        /**
+         * getDoneCycle: the data response cycle
+         * respCycle: add extra INV latency
+         * writeBack cycle is not consider, because it is off the critical path
+         */
         uint64_t getDoneCycle = respCycle;
+        bool hit = cc->isValid(lineId, req.type); // justify whether the access hit in the cache
         respCycle = cc->processAccess(req, lineId, respCycle, &getDoneCycle);
 
         if (evRec->hasRecord()) accessRecord = evRec->popRecord();
@@ -152,7 +157,8 @@ uint64_t TimingCache::access(MemReq& req) {
         // At this point we have all the info we need to hammer out the timing record
         TimingRecord tr = {req.lineAddr << lineBits, req.cycle, respCycle, req.type, nullptr, nullptr}; //note the end event is the response, not the wback
 
-        if (getDoneCycle - req.cycle == accLat) {
+        // if (getDoneCycle - req.cycle == accLat) {
+        if(hit){
             // Hit
             assert(!writebackRecord.isValid());
             assert(!accessRecord.isValid());

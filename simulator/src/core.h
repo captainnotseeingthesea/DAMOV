@@ -31,7 +31,7 @@
 #include "decoder.h"
 #include "g_std/g_string.h"
 #include "stats.h"
-#include "graph_prefetcher.h"
+#include "prefetch/graph_prefetcher.h"
 
 struct BbParseNode{
     uint64_t idx;
@@ -54,13 +54,13 @@ struct BblInfo {
  * As an artifact of having a shared code cache, we need these to be the same for different core types.
  */
 struct InstrFuncPtrs {  // NOLINT(whitespace)
-    void (*loadPtr)(THREADID, ADDRINT, UINT32);
-    void (*storePtr)(THREADID, ADDRINT, UINT32);
+    void (*loadPtr)(THREADID, ADDRINT, UINT32, ADDRINT);
+    void (*storePtr)(THREADID, ADDRINT, UINT32, ADDRINT);
     void (*bblPtr)(THREADID, ADDRINT, BblInfo*);
     void (*branchPtr)(THREADID, ADDRINT, BOOL, ADDRINT, ADDRINT);
     // Same as load/store functions, but last arg indicated whether op is executing
-    void (*predLoadPtr)(THREADID, ADDRINT, BOOL, UINT32);
-    void (*predStorePtr)(THREADID, ADDRINT, BOOL, UINT32);
+    void (*predLoadPtr)(THREADID, ADDRINT, BOOL, UINT32, ADDRINT);
+    void (*predStorePtr)(THREADID, ADDRINT, BOOL, UINT32, ADDRINT);
     // Offload Hooks.
     //OffloadBegin must 1) take a snapshot of the stats and 2) if(pim_mode) flush the caches.
     //OffloadEnd must 2) take a snapshot of the stats and 2) increment the stats with the delta between OffloadBegin
@@ -91,9 +91,16 @@ class Core : public GlobAlloc {
 
     protected:
         g_string name;
+        GraphPrefetcher *graphPrefetcher;
+        bool graphPrefetcherEnabled;
 
     public:
-        explicit Core(g_string& _name) : lastUpdateCycles(0), lastUpdateInstrs(0), name(_name) {}
+        explicit Core(g_string& _name, GraphPrefetcher *_graphPrefetcher) : name(_name), graphPrefetcher(_graphPrefetcher){
+            graphPrefetcherEnabled = (_graphPrefetcher != NULL);
+        }
+
+        explicit Core(g_string& _name) : name(_name), graphPrefetcher(NULL), graphPrefetcherEnabled(false){}
+
         virtual void offloadFunction_begin()  = 0; 
         virtual void offloadFunction_end()  = 0; 
         virtual int get_offload_code()  = 0; 

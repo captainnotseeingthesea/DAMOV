@@ -30,6 +30,9 @@
 #include "cache.h"
 #include "galloc.h"
 #include "zsim.h"
+#include "prefetch/prefetcher.h"
+#include "event_recorder.h"
+#include "timing_event.h"
 
 /* Extends Cache with an L0 direct-mapped cache, optimized to hell for hits
  *
@@ -60,12 +63,15 @@ class FilterCache : public Cache {
 
         lock_t filterLock;
         uint64_t fGETSHit, fGETXHit;
+        Prefetcher *l1_prefetcher;
+
+        // Collect stats of graph data access
+        uint64_t fGraphGetSHit, fGraphGetXHit;
 
     public:
         FilterCache(uint32_t _numSets, uint32_t _numLines, CC* _cc, CacheArray* _array,
-                    ReplPolicy* _rp, uint32_t _accLat, uint32_t _invLat, bool bypass, g_string& _name)
-                : Cache(_numLines, _cc, _array, _rp, _accLat, _invLat, bypass, _name)
-
+                    ReplPolicy* _rp, uint32_t _accLat, uint32_t _invLat, bool bypass, g_string& _name, Prefetcher* _prefetcher)
+                : Cache(_numLines, _cc, _array, _rp, _accLat, _invLat, bypass, _name), l1_prefetcher(_prefetcher)
         {
             numSets = _numSets;
             setMask = numSets - 1;
@@ -74,6 +80,7 @@ class FilterCache : public Cache {
             for (uint32_t i = 0; i < numSets; i++) filterArray[i].clear();
             futex_init(&filterLock);
             fGETSHit = fGETXHit = 0;
+            fGraphGetSHit = fGraphGetXHit = 0;
             srcId = -1;
             reqFlags = 0;
         }
@@ -94,45 +101,133 @@ class FilterCache : public Cache {
             fgetsStat->init("fhGETS", "Filtered GETS hits", &fGETSHit);
             ProxyStat* fgetxStat = new ProxyStat();
             fgetxStat->init("fhGETX", "Filtered GETX hits", &fGETXHit);
+
+            ProxyStat* fgraphsStat = new ProxyStat();
+            fgraphsStat->init("fhGraphHit", "Filtered Graph GETX hits", &fGraphGetSHit);
+            ProxyStat* fgraphxStat = new ProxyStat();
+            fgraphxStat->init("fhGrapxHit", "Filtered Graph GETX hits", &fGraphGetXHit);
             cacheStat->append(fgetsStat);
             cacheStat->append(fgetxStat);
+            cacheStat->append(fgraphsStat);
+            cacheStat->append(fgraphxStat);
 
             initCacheStats(cacheStat);
             parentStat->append(cacheStat);
         }
 
-        inline uint64_t load(Address vAddr, uint64_t curCycle) {
-            Address vLineAddr = vAddr >> lineBits;
-            uint32_t idx = vLineAddr & setMask;
-            uint64_t availCycle = filterArray[idx].availCycle; //read before, careful with ordering to avoid timing races
-            if (vLineAddr == filterArray[idx].rdAddr) {
-                fGETSHit++;
-                return MAX(curCycle, availCycle);
-            } else {
-                return replace(vLineAddr, idx, true, curCycle);
+        inline void prefetch(AccessInfo info, uint64_t curCycle, uint64_t respCycle, bool miss)
+        {
+            Address vAddr = info.addr;
+            Address pc = info.pc;
+            uint32_t size = info.size;
+
+            Address pLineAddr = procMask | (vAddr >> lineBits);
+            EventRecorder *evRec = zinfo->eventRecorders[srcId];
+            // Get prefetch addresses
+            if (l1_prefetcher && l1_prefetcher->observeAccess(pLineAddr, reqFlags, GETS, miss)) {
+                TimingRecord demand_tr;
+
+                g_vector<TimingRecord> trGroups;
+                uint64_t reqCycle = curCycle;
+                PrefetchInfo pfi(vAddr, pLineAddr, pc, reqCycle, size, srcId, 0, false, miss);
+                g_vector<AddrPriority> addresses;
+                l1_prefetcher->calculatePrefetch(pfi, respCycle, addresses);
+
+                demand_tr.clear();
+                if(evRec && evRec->hasRecord())
+                {
+                    demand_tr = evRec->popRecord();
+                }
+                for(AddrPriority& addr_prio : addresses)
+                {
+                    Address vLineAddr = addr_prio.first >> lineBits;
+                    uint32_t idx = vLineAddr & setMask;
+                    if(vLineAddr == filterArray[idx].rdAddr)
+                    {
+                        continue;
+                    }
+                    else
+                    {
+                        AccessInfo prefetchInfo = {addr_prio.first, pc, size, info.dataType, info.accessType};
+                        uint64_t pfRespCycle = replace(vLineAddr, prefetchInfo, idx, reqCycle++, MemReq::PREFETCH);
+                    }
+                    if(evRec && evRec->hasRecord())
+                    {
+                        trGroups.push_back(evRec->popRecord());
+                    }
+                }
+                if(!trGroups.empty())
+                {
+                    DelayEvent* startEv = new (evRec) DelayEvent(0);
+                    startEv->setMinStartCycle(curCycle);
+                    TimingRecord tr = {pLineAddr, curCycle, respCycle, GETS, startEv, startEv};
+                    if(demand_tr.isValid())
+                    {
+                        startEv->addChild(demand_tr.startEvent, evRec);
+                        tr.endEvent = demand_tr.endEvent;
+                    }
+                    for(auto &ptr : trGroups)
+                    {
+                        tr.startEvent->addChild(ptr.startEvent, evRec);
+                    }
+                    evRec->pushRecord(tr);
+                }
+                else if(demand_tr.isValid())
+                {
+                    evRec->pushRecord(demand_tr);
+                }
             }
         }
 
-        inline uint64_t store(Address vAddr, uint64_t curCycle) {
-            Address vLineAddr = vAddr >> lineBits;
+        inline uint64_t load(AccessInfo &info, uint64_t curCycle){
+            Address vLineAddr = info.addr >> lineBits;
+            uint32_t idx = vLineAddr & setMask;
+            uint64_t availCycle = filterArray[idx].availCycle; //read before, careful with ordering to avoid timing races
+            uint64_t respCycle;
+            bool miss = true;
+            if (vLineAddr == filterArray[idx].rdAddr) {
+                fGETSHit++;
+                respCycle = MAX(curCycle, availCycle);
+                miss = false;
+                fGraphGetSHit += info.isGraphData();
+            } else {
+                if(inCache(procMask | vLineAddr))
+                {
+                    miss = false;
+                }
+                respCycle = replace(vLineAddr, info, idx, curCycle);
+            } 
+            prefetch(info, curCycle, respCycle, miss);
+            return respCycle;
+        }
+
+        inline uint64_t store(AccessInfo &info, uint64_t curCycle) {
+            Address vLineAddr = info.addr >> lineBits;
             uint32_t idx = vLineAddr & setMask;
             uint64_t availCycle = filterArray[idx].availCycle; //read before, careful with ordering to avoid timing races
             if (vLineAddr == filterArray[idx].wrAddr) {
                 fGETXHit++;
                 //NOTE: Stores don't modify availCycle; we'll catch matches in the core
-                //filterArray[idx].availCycle = curCycle; //do optimistic store-load forwarding
+                //filterArray[idx].availCycle = curCycle; //do optimistic store-load forwardi
+                fGraphGetXHit += (info.dataType != AccessInfo::DATA && info.dataType != AccessInfo::INS) ? 1 : 0;
                 return MAX(curCycle, availCycle);
             } else {
-                return replace(vLineAddr, idx, false, curCycle);
+                return replace(vLineAddr, info, idx, curCycle);
             }
         }
 
-        uint64_t replace(Address vLineAddr, uint32_t idx, bool isLoad, uint64_t curCycle) {
+        uint64_t replace(Address vLineAddr, AccessInfo &info, uint32_t idx, uint64_t curCycle, uint32_t extraFlag = 0) {
             Address pLineAddr = procMask | vLineAddr;
+            bool isLoad = info.accessType == AccessInfo::LOAD;
             MESIState dummyState = MESIState::I;
+            Address vAddr = info.addr;
+            Address pc = info.pc;
+            uint32_t size = info.size;
             futex_lock(&filterLock);
-            MemReq req = {pLineAddr, isLoad? GETS : GETX, 0, &dummyState, curCycle, &filterLock, dummyState, srcId, reqFlags};
-            uint64_t respCycle  = access(req);
+            MemReq req = {pLineAddr, info, isLoad? GETS : GETX, 0, &dummyState, curCycle, &filterLock, dummyState, srcId, reqFlags | extraFlag};
+
+            bool miss = !inCache(pLineAddr);
+            uint64_t respCycle = access(req);
 
             //Due to the way we do the locking, at this point the old address might be invalidated, but we have the new address guaranteed until we release the lock
 
@@ -147,6 +242,10 @@ class FilterCache : public Cache {
             if (oldAddr != vLineAddr) filterArray[idx].availCycle = respCycle;
 
             futex_unlock(&filterLock);
+            if(l1_prefetcher && miss)
+            {
+                l1_prefetcher->notifyFill(req, respCycle);
+            }
             return respCycle;
         }
 

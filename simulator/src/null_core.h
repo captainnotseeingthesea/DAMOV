@@ -62,11 +62,11 @@ class NullCore : public Core {
         static void PrefetcherLoadSrcFunc(THREADID tid, SrcInfo src);
         static void PrefetcherLoadDestFunc(THREADID tid, DestInfo dst);
 
-        static void LoadFunc(THREADID tid, ADDRINT addr, UINT32 size);
-        static void StoreFunc(THREADID tid, ADDRINT addr, UINT32 size);
+        static void LoadFunc(THREADID tid, ADDRINT addr, UINT32 size, Address pc);
+        static void StoreFunc(THREADID tid, ADDRINT addr, UINT32 size, Address pc);
         static void BblFunc(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo);
-        static void PredLoadFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size);
-        static void PredStoreFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size);
+        static void PredLoadFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size, Address pc);
+        static void PredStoreFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size, Address pc);
 
         static void BranchFunc(THREADID, ADDRINT, BOOL, ADDRINT, ADDRINT) {}
 } ATTR_LINE_ALIGNED; //This needs to take up a whole cache line, or false sharing will be extremely frequent

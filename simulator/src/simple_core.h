@@ -39,13 +39,12 @@ class SimpleCore : public Core {
     protected:
         FilterCache* l1i;
         FilterCache* l1d;
-        GraphPrefetcher *graphPrefetcher;
 
         uint64_t instrs;
         uint64_t curCycle;
         uint64_t phaseEndCycle; //next stopping point
         uint64_t haltedCycles;
-	    	uint64_t offload_instrs = 0; 
+        uint64_t offload_instrs = 0; 
         bool offload_region = false;
 
     public:
@@ -68,8 +67,8 @@ class SimpleCore : public Core {
 
     protected:
         //Simulation functions
-        inline void load(Address addr, uint32_t size);
-        inline void store(Address addr, uint32_t size);
+        inline void load(Address addr, uint32_t size, Address pc);
+        inline void store(Address addr, uint32_t size, Address pc);
         inline void bbl(Address bblAddr, BblInfo* bblInstrs);
 
         inline void prefetcherLoadSrc(SrcInfo src) {graphPrefetcher->pushSrcInfo(src);}
@@ -81,11 +80,11 @@ class SimpleCore : public Core {
         static void PrefetcherLoadSrcFunc(THREADID tid, SrcInfo src);
         static void PrefetcherLoadDestFunc(THREADID tid, DestInfo dest);
 
-        static void LoadFunc(THREADID tid, ADDRINT addr, UINT32 size);
-        static void StoreFunc(THREADID tid, ADDRINT addr, UINT32 size);
+        static void LoadFunc(THREADID tid, ADDRINT addr, UINT32 size, ADDRINT pc);
+        static void StoreFunc(THREADID tid, ADDRINT addr, UINT32 size, ADDRINT pc);
         static void BblFunc(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo);
-        static void PredLoadFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size);
-        static void PredStoreFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size);
+        static void PredLoadFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size, ADDRINT pc);
+        static void PredStoreFunc(THREADID tid, ADDRINT addr, BOOL pred, UINT32 size, ADDRINT pc);
 
         static void BranchFunc(THREADID, ADDRINT, BOOL, ADDRINT, ADDRINT) {}
 }  ATTR_LINE_ALIGNED; //This needs to take up a whole cache line, or false sharing will be extremely frequent

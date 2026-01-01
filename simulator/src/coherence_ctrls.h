@@ -61,6 +61,11 @@ class CC : public GlobAlloc {
         //Repl policy interface
         virtual uint32_t numSharers(uint32_t lineId) = 0;
         virtual bool isValid(uint32_t lineId) = 0;
+        virtual bool isValid(uint32_t lineId, AccessType type) = 0;
+
+        // Whether the cache line is prefetched
+        virtual bool isPrefetched(uint32_t lineId) = 0; 
+        virtual bool isEverPrefetched(uint32_t lineId) = 0; 
 };
 
 
@@ -79,10 +84,62 @@ class Cache;
 class Network;
 
 /* NOTE: To avoid virtual function overheads, there is no BottomCC interface, since we only have a MESI controller for now */
+struct EntryInfo
+{
+    uint64_t tickInserted = 0;
+    bool prefetched = 0;
+    bool everPrefetched = 0;
+
+    /**
+     * Check if this block was the result of a hardware prefetch, yet to
+     * be touched.
+     * @return True if the block was a hardware prefetch, unaccesed.
+     */
+    bool wasPrefetched() const { return prefetched; }
+
+    bool wasEverPrefetched() const { return everPrefetched; }
+
+    /**
+     * Clear the prefetching bit. Either because it was recently used, or due
+     * to the block being invalidated.
+     */
+    void clearPrefetched()
+    {
+        prefetched = false;
+    }
+
+    void clearAllPrefetched()
+    {
+        prefetched = false;
+        everPrefetched = false;
+    }
+
+    void setPrefetched()
+    {
+        prefetched = true;
+        everPrefetched = true;
+    }
+
+    void insert(uint64_t cycle, bool prefetched)
+    {
+        if(prefetched)
+        {
+            setPrefetched();
+        }
+        tickInserted = cycle;
+    }
+
+    uint64_t getReadyTick()
+    {
+        return tickInserted;
+    }
+
+};
 
 class MESIBottomCC : public GlobAlloc {
     private:
         MESIState* array;
+        EntryInfo* entries;
         g_vector<MemObject*> parents;
         uint32_t numLines;
         uint32_t selfId;
@@ -91,6 +148,9 @@ class MESIBottomCC : public GlobAlloc {
 
         //Profiling counters
         Counter profGETSHit, profGETSMiss, profGETXHit, profGETXMissIM /*from invalid*/, profGETXMissSM /*from S, i.e. upgrade misses*/;
+        Counter profGraphGETSHit, profGraphGETSMiss, profGraphGETXHit, profGraphGETXMissIM,
+        profGraphGETXMissSM;
+
         Counter profPUTS, profPUTX /*received from downstream*/;
         Counter profINV, profINVX, profFWD /*received from upstream*/;
         Counter sharedRequests;
@@ -109,8 +169,10 @@ class MESIBottomCC : public GlobAlloc {
         MESIBottomCC(uint32_t _numLines, uint32_t _selfId, bool _nonInclusiveHack, bool _bypass) :
             numLines(_numLines), selfId(_selfId), nonInclusiveHack(_nonInclusiveHack), bypass(_bypass) {
             array = gm_calloc<MESIState>(numLines);
+            entries = gm_calloc<EntryInfo>(numLines);
             for (uint32_t i = 0; i < numLines; i++) {
                 array[i] = I;
+                entries[i].clearAllPrefetched();
             }
             futex_init(&ccLock);
         }
@@ -128,6 +190,11 @@ class MESIBottomCC : public GlobAlloc {
             profGETSMiss.init("mGETS", "GETS misses");
             profGETXMissIM.init("mGETXIM", "GETX I->M misses");
             profGETXMissSM.init("mGETXSM", "GETX S->M misses (upgrade misses)");
+            profGraphGETSHit.init("hGraphGETS", "Graph GETS hits");
+            profGraphGETXHit.init("hGraphGETX", "Graph GETX hits");
+            profGraphGETSMiss.init("mGraphGETS", "Graph GETS misses");
+            profGraphGETXMissIM.init("mGraphGETXIM", "Graph GETX I->M misses");
+            profGraphGETXMissSM.init("mGraphGETXSM", "Graph GETX S->M misses (upgrade misses)");
             profPUTS.init("PUTS", "Clean evictions (from lower level)");
             profPUTX.init("PUTX", "Dirty evictions (from lower level)");
             profINV.init("INV", "Invalidates (from upper level)");
@@ -142,6 +209,11 @@ class MESIBottomCC : public GlobAlloc {
             parentStat->append(&profGETSMiss);
             parentStat->append(&profGETXMissIM);
             parentStat->append(&profGETXMissSM);
+            parentStat->append(&profGraphGETSHit);
+            parentStat->append(&profGraphGETXHit);
+            parentStat->append(&profGraphGETSMiss);
+            parentStat->append(&profGraphGETXMissIM);
+            parentStat->append(&profGraphGETXMissSM);
             parentStat->append(&profPUTS);
             parentStat->append(&profPUTX);
             parentStat->append(&profINV);
@@ -152,15 +224,15 @@ class MESIBottomCC : public GlobAlloc {
             parentStat->append(&sharedRequests);
         }
 
-        uint64_t processEviction(Address wbLineAddr, uint32_t lineId, bool lowerLevelWriteback, uint64_t cycle, uint32_t srcId);
+        uint64_t processEviction(Address wbLineAddr, Address pc, int32_t lineId, bool lowerLevelWriteback, uint64_t cycle, uint32_t srcId);
 
-        uint64_t processAccess(Address lineAddr, uint32_t lineId, AccessType type, uint64_t cycle, uint32_t srcId, uint32_t flags);
+        uint64_t processAccess(Address lineAddr, AccessInfo AccessInfo, uint32_t lineId, AccessType type, uint64_t cycle, uint32_t srcId, uint32_t flags);
 
         void processWritebackOnAccess(Address lineAddr, uint32_t lineId, AccessType type);
 
         void processInval(Address lineAddr, uint32_t lineId, InvType type, bool* reqWriteback);
 
-        uint64_t processNonInclusiveWriteback(Address lineAddr, AccessType type, uint64_t cycle, MESIState* state, uint32_t srcId, uint32_t flags);
+        uint64_t processNonInclusiveWriteback(Address lineAddr, Address pc, AccessType type, uint64_t cycle, MESIState* state, uint32_t srcId, uint32_t flags);
 
         inline void lock() {
             futex_lock(&ccLock);
@@ -173,6 +245,22 @@ class MESIBottomCC : public GlobAlloc {
         /* Replacement policy query interface */
         inline bool isValid(uint32_t lineId) {
             return array[lineId] != I;
+        }
+
+        inline bool isValid(uint32_t lineId, AccessType type) {
+            if(type == GETX)
+            {
+                return array[lineId] == E || array[lineId] == M;
+            }
+            return array[lineId] != I;
+        }
+
+        inline bool isPrefetched(uint32_t lineId) {
+            return entries[lineId].prefetched;
+        }
+
+        inline bool isEverPrefetched(uint32_t lineId) {
+            return entries[lineId].everPrefetched;
         }
 
         //Could extend with isExclusive, isDirty, etc, but not needed for now.
@@ -351,7 +439,7 @@ class MESICC : public CC {
         uint64_t processEviction(const MemReq& triggerReq, Address wbLineAddr, int32_t lineId, uint64_t startCycle) {
             bool lowerLevelWriteback = false;
             uint64_t evCycle = tcc->processEviction(wbLineAddr, lineId, &lowerLevelWriteback, startCycle, triggerReq.srcId); //1. if needed, send invalidates/downgrades to lower level
-            evCycle = bcc->processEviction(wbLineAddr, lineId, lowerLevelWriteback, evCycle, triggerReq.srcId); //2. if needed, write back line to upper level
+            evCycle = bcc->processEviction(wbLineAddr, triggerReq.accessInfo.pc, lineId, lowerLevelWriteback, evCycle, triggerReq.srcId); //2. if needed, write back line to upper level
             return evCycle;
         }
 
@@ -365,7 +453,7 @@ class MESICC : public CC {
             if (lineId == -1 || (((req.type == PUTS) || (req.type == PUTX)) && !bcc->isValid(lineId) && !bypass)) { //can only be a non-inclusive wback
                 assert(nonInclusiveHack);
                 assert((req.type == PUTS) || (req.type == PUTX));
-                respCycle = bcc->processNonInclusiveWriteback(req.lineAddr, req.type, startCycle, req.state, req.srcId, req.flags);
+                respCycle = bcc->processNonInclusiveWriteback(req.lineAddr, req.accessInfo.pc, req.type, startCycle, req.state, req.srcId, req.flags);
             } else {
                 //Prefetches are side requests and get handled a bit differently
                 bool isPrefetch = req.flags & MemReq::PREFETCH;
@@ -373,7 +461,7 @@ class MESICC : public CC {
                 uint32_t flags = req.flags & ~MemReq::PREFETCH; //always clear PREFETCH, this flag cannot propagate up
 
                 //if needed, fetch line or upgrade miss from upper level
-                respCycle = bcc->processAccess(req.lineAddr, lineId, req.type, startCycle, req.srcId, flags);
+                respCycle = bcc->processAccess(req.lineAddr, req.accessInfo, lineId, req.type, startCycle, req.srcId, flags);
                 if (getDoneCycle) *getDoneCycle = respCycle;
                 if (!isPrefetch) { //prefetches only touch bcc; the demand request from the core will pull the line to lower level
                     //At this point, the line is in a good state w.r.t. upper levels
@@ -416,6 +504,10 @@ class MESICC : public CC {
         //Repl policy interface
         uint32_t numSharers(uint32_t lineId) {return tcc->numSharers(lineId);}
         bool isValid(uint32_t lineId) {return bcc->isValid(lineId);}
+        bool isValid(uint32_t lineId, AccessType type) {return bcc->isValid(lineId, type);}
+        // judge whether the cache line is prefetched
+        bool isPrefetched(uint32_t lineId) {return bcc->isPrefetched(lineId);}
+        bool isEverPrefetched(uint32_t lineId) {return bcc->isEverPrefetched(lineId);}
 };
 
 // Terminal CC, i.e., without children --- accepts GETS/X, but not PUTS/X
@@ -469,15 +561,16 @@ class MESITerminalCC : public CC {
 
         uint64_t processEviction(const MemReq& triggerReq, Address wbLineAddr, int32_t lineId, uint64_t startCycle) {
             bool lowerLevelWriteback = false;
-            uint64_t endCycle = bcc->processEviction(wbLineAddr, lineId, lowerLevelWriteback, startCycle, triggerReq.srcId); //2. if needed, write back line to upper level
+            uint64_t endCycle = bcc->processEviction(wbLineAddr, triggerReq.accessInfo.pc, lineId, lowerLevelWriteback, startCycle, triggerReq.srcId); //2. if needed, write back line to upper level
             return endCycle;  // critical path unaffected, but TimingCache needs it
         }
 
         uint64_t processAccess(const MemReq& req, int32_t lineId, uint64_t startCycle,  uint64_t* getDoneCycle = nullptr) {
             assert(lineId != -1);
-            assert(!getDoneCycle);
+            // assert(!getDoneCycle);
             //if needed, fetch line or upgrade miss from upper level
-            uint64_t respCycle = bcc->processAccess(req.lineAddr, lineId, req.type, startCycle, req.srcId, req.flags);
+            uint64_t respCycle = bcc->processAccess(req.lineAddr, req.accessInfo, lineId, req.type, startCycle, req.srcId, req.flags);
+            if (getDoneCycle) *getDoneCycle = respCycle;
             //at this point, the line is in a good state w.r.t. upper levels
             return respCycle;
         }
@@ -504,6 +597,10 @@ class MESITerminalCC : public CC {
         //Repl policy interface
         uint32_t numSharers(uint32_t lineId) {return 0;} //no sharers
         bool isValid(uint32_t lineId) {return bcc->isValid(lineId);}
+        bool isValid(uint32_t lineId, AccessType type) {return bcc->isValid(lineId, type);}
+        // judge whether the cache line is prefetched
+        bool isPrefetched(uint32_t lineId) {return bcc->isPrefetched(lineId);}
+        bool isEverPrefetched(uint32_t lineId) {return bcc->isEverPrefetched(lineId);}
 };
 
 #endif  // COHERENCE_CTRLS_H_

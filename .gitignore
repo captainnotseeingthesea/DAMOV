@@ -14,5 +14,9 @@ workloads/*
 .vscode/
 tests/
 pin.log
+taco_results/
+pin/
+zsim_stats/
 config_files/
-*.png
+command_files/
+libconfig/

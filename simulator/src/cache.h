@@ -33,8 +33,10 @@
 #include "memory_hierarchy.h"
 #include "repl_policies.h"
 #include "stats.h"
+#include "prefetch/prefetcher.h"
 
 class Network;
+class Prefetcher;
 
 /* General coherent modular cache. The replacement policy and cache array are
  * pretty much mix and match. The coherence controller interfaces are general
@@ -56,13 +58,21 @@ class Cache : public BaseCache {
 
         g_string name;
 
+        // Prefetcher
+        Prefetcher* prefetcher;
     public:
         Cache(uint32_t _numLines, CC* _cc, CacheArray* _array, ReplPolicy* _rp, uint32_t _accLat, uint32_t _invLat, bool _bypass, const g_string& _name);
+
+        Cache(uint32_t _numLines, CC* _cc, CacheArray* _array, ReplPolicy* _rp, uint32_t _accLat, uint32_t _invLat, bool _bypass, const g_string& _name, Prefetcher* _prefetcher);
 
         const char* getName();
         void setParents(uint32_t _childId, const g_vector<MemObject*>& parents, Network* network);
         void setChildren(const g_vector<BaseCache*>& children, Network* network);
         void initStats(AggregateStat* parentStat);
+        bool inCache(Address lineAddr);
+        bool hasBeenPrefetched(Address address);
+
+        bool hasEverBeenPrefetched(Address addr);
 
         virtual uint64_t access(MemReq& req);
 
